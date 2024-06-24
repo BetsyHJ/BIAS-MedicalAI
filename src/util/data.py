@@ -1,0 +1,181 @@
+from datasets import load_dataset, Image, Dataset, DatasetDict, concatenate_datasets
+from datasets.features import ClassLabel, Sequence
+from PIL import Image as PIL_Image
+import os
+import pandas as pd
+
+
+def read_dataset_from_folder(root_dir):
+
+    # root_dir = './NIH-small/sample/'
+
+    dataset = load_dataset('imagefolder', split='train', data_dir=os.path.join(root_dir, 'images'))
+    # Add a filename column
+    def add_filename(example):
+        example['filename'] = os.path.basename(example['image'].filename)
+        return example
+    dataset = dataset.map(add_filename)
+
+    dataset = dataset.cast_column("image", Image(mode="RGB"))
+
+    # Load the metadata from the CSV file
+    import pandas as pd
+    metadata_file = os.path.join(root_dir, 'sample_labels.csv')
+    # Load the metadata from the CSV file
+    metadata_df = pd.read_csv(metadata_file)
+
+    # Create a dictionary from the metadata for quick lookup
+    metadata_dict = metadata_df.set_index('Image Index').to_dict(orient='index')
+
+    # Add metadata to the dataset
+    def add_metadata(example):
+        filename = example['filename']
+        if filename in metadata_dict:
+            metadata = metadata_dict[filename]
+            example.update(metadata)
+        return example
+    
+    dataset = dataset.map(add_metadata)
+
+
+    # Split "Finding Labels" into multiple labels
+    metadata_df['Finding Labels'] = metadata_df['Finding Labels'].str.split('|')
+
+    # Get all unique labels
+    all_labels = set(label for sublist in metadata_df['Finding Labels'] for label in sublist)
+    # as no finding label affects so many images, most implementations remove "no finding" label.
+    all_labels.remove('No Finding')
+
+    # ### #TODO: only select some labels
+    # all_labels = set(['Infiltration', 'Effusion', 'Atelectasis', 'Nodule', 'Pneumothorax']) 
+
+    # Create a ClassLabel feature for each unique label
+    class_labels = ClassLabel(names=list(all_labels))
+
+    # Define the label feature as a sequence of ClassLabel
+    labels_type = Sequence(class_labels)
+    num_labels = len(class_labels.names)
+
+
+    # # Remove unnecessary columns if needed
+    # dataset = dataset.remove_columns(['Image Index', 'Finding Labels', 'Follow-up #', 'Patient ID', 'Patient Age', 'Patient Gender'])
+
+    # Create a dictionary from the metadata for quick lookup
+    metadata_dict = metadata_df.set_index('Image Index').to_dict(orient='index')
+
+    # Add metadata to the dataset, including the sequence of class labels
+    def add_metadata(example):
+        filename = example['filename']
+        if filename in metadata_dict:
+            metadata = metadata_dict[filename]
+            example.update(metadata)
+            # example['labels_list'] = [class_labels.str2int(label) if label in class_labels.names else 'No Finding' for label in metadata['Finding Labels']]
+            example['labels'] = [float(class_labels.int2str(x) in metadata['Finding Labels']) for x in range(num_labels)]
+        return example
+
+    # Apply the metadata and features to the dataset
+    dataset = dataset.map(add_metadata)
+    # %%
+    # # filter data with no finding label; we can also down-sample it.
+    dataset_only_finding = dataset.filter(lambda example: sum(example['labels']) >= 1.0)
+    print(len(dataset), len(dataset_only_finding))
+    dataset = dataset_only_finding
+
+    # %% [markdown]
+    # ### data split
+    # train : valid : test with ratio of 6:2:2.
+    # 
+
+    # %%
+    train_val_ds = dataset.train_test_split(test_size=0.2, seed=42)
+    test_ds = train_val_ds['test']
+
+    return train_val_ds, test_ds, class_labels
+
+
+def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv'):
+
+    # # load train_val and test (filenames) sets
+    f = open(root_dir + 'train_val_list.txt')
+    train_filenames = [x.strip() for x in f.readlines()]
+    f.close()
+    f = open(root_dir + 'test_list.txt')
+    test_filenames = [x.strip() for x in f.readlines()]
+    f.close()
+
+    # Load the metadata from the CSV file
+    metadata_file = os.path.join(root_dir, meta_file)
+    # Load the metadata from the CSV file
+    metadata_df = pd.read_csv(metadata_file)
+
+    # # Create a dictionary from the metadata for quick lookup
+    # metadata_dict = metadata_df.set_index('Image Index').to_dict(orient='index')
+
+    images_dir = []
+    dataset = None
+
+    image_paths = []
+    filenames_cor = []
+    for folder in os.listdir(root_dir):
+        if os.path.isdir(os.path.join(root_dir, folder)) and ('.DS_' not in folder):
+            images_dir.append(os.path.join(root_dir, folder) + '/images/')
+            for image_file in os.listdir(images_dir[-1]): # TODO: just for check
+                image_path = os.path.join(images_dir[-1] , image_file)
+                if image_file.lower().endswith(('png')):
+                    image_paths.append(image_path)
+                    filenames_cor.append(image_file)
+                
+    filenames_to_path = dict(zip(filenames_cor, image_paths))
+    filenames_to_path = pd.Series(data=filenames_to_path)
+    
+    # TODO: just for check
+    metadata_df = metadata_df[metadata_df['Image Index'].isin(filenames_cor)]
+
+    metadata_df['image'] = filenames_to_path.loc[metadata_df['Image Index']].values
+    
+    # Split "Finding Labels" into multiple labels
+    metadata_df['Finding Labels'] = metadata_df['Finding Labels'].str.split('|')
+    # Get all unique labels
+    all_labels = set(label for sublist in metadata_df['Finding Labels'] for label in sublist)
+    # as no finding label affects so many images, most implementations remove "no finding" label.
+    all_labels.remove('No Finding')
+    # ### #TODO: only select some labels
+    # all_labels = set(['Infiltration', 'Effusion', 'Atelectasis', 'Nodule', 'Pneumothorax']) 
+    # Create a ClassLabel feature for each unique label
+    class_labels = ClassLabel(names=list(all_labels))
+
+    # Define the label feature as a sequence of ClassLabel
+    labels_type = Sequence(class_labels)
+    num_labels = len(class_labels.names)
+
+    metadata_df['labels'] = metadata_df['Finding Labels'].map(lambda example: [float(class_labels.int2str(x) in example) for x in range(num_labels)])
+    
+    # only get the following info
+    metadata_df = metadata_df[['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']]
+
+    # split metadata into train and test according to train_filenames and test_filenames
+    train_indices = metadata_df['Image Index'].isin(train_filenames)
+    train_df = metadata_df[train_indices]
+    test_df = metadata_df[metadata_df['Image Index'].isin(test_filenames)]
+
+    # train_val_ds = Dataset.from_pandas(train_df, split='train')
+    # test_ds = Dataset.from_pandas(test_df, split='test')
+
+    print(len(train_df), len(test_df))
+
+    # from df to dict
+    def df_to_dict(df, keys=['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']):
+        data_dict = {}
+        for k in keys:
+            data_dict[k] = list(df[k].values)
+        return data_dict
+    
+    train_val_ds = Dataset.from_dict(df_to_dict(train_df), split='train')
+    test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+
+    train_val_ds = train_val_ds.cast_column("image", Image(mode="RGB"))
+    test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+
+    print(train_val_ds[0])
+
+    return train_val_ds, test_ds, class_labels
