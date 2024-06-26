@@ -3,7 +3,19 @@ from datasets.features import ClassLabel, Sequence
 from PIL import Image as PIL_Image
 import os
 import pandas as pd
+import torch
 
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+elif torch.backends.mps.is_available():
+    device = 'mps'
+
+
+def collate_fn(examples):
+    pixel_values = torch.stack([example["pixel_values"] for example in examples]).to(device)
+    labels = torch.tensor([example["labels"] for example in examples]).to(device) # change for one-hot multilabels
+    return {"pixel_values": pixel_values, "labels": labels}
 
 def read_dataset_from_folder(root_dir):
 
@@ -161,7 +173,7 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv'):
     # train_val_ds = Dataset.from_pandas(train_df, split='train')
     # test_ds = Dataset.from_pandas(test_df, split='test')
 
-    print(len(train_df), len(test_df))
+    print("Training and test sets:", len(train_df), len(test_df))
 
     # from df to dict
     def df_to_dict(df, keys=['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']):

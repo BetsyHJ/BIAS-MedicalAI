@@ -32,6 +32,7 @@ warnings.filterwarnings("ignore")  # TODO: check
 
 ## self-defined functions and classes
 from util.data import read_dataset_from_folder, read_NIH_large
+from util.data import collate_fn
 
 
 # root_dir = './NIH-small/sample/'
@@ -145,14 +146,10 @@ if torch.cuda.is_available():
     device = 'cuda'
 elif torch.backends.mps.is_available():
     device = 'mps'
+print("We are using device:", device)
 
-def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples]).to(device)
-    labels = torch.tensor([example["labels"] for example in examples]).to(device).float() # change for one-hot multilabels
-    return {"pixel_values": pixel_values, "labels": labels}
-
-train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=4)
-val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=4)
+train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=512)
+val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=512)
 
 # %%
 batch = next(iter(train_dataloader))
@@ -334,6 +331,8 @@ def optimize_threshold_metric(model, val_dataloader, threshold_grid=None):
 
 
 thresholds = optimize_threshold_metric(model, val_dataloader)
+path = './tune-ResNet-on-NIH'
+np.savetxt(path + '/thresholds.txt', thresholds)
 
 # %%
 def evaluate(test_dataloader, threshold=0.5, verbose=1):
