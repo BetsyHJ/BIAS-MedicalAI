@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.append('./src/')
 import numpy as np
+from datetime import datetime
 
 from torch.utils.data import DataLoader
 import torch
@@ -22,6 +23,8 @@ from mymodel.resnet import ResNetMultiLabel
 from util.data import read_dataset_from_folder, read_NIH_large
 from util.data import collate_fn
 
+print(datetime.now())
+
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
@@ -31,7 +34,11 @@ print("We are using device:", device)
 
 ## Load data
 root_dir = './NIH-large/'
-_, test_ds, class_labels = read_NIH_large(root_dir)
+path = './tune-ResNet-on-NIH/'
+
+label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
+print("label list:", label_list)
+test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True)
 num_labels = len(class_labels.names)
 
 size = 224
@@ -48,13 +55,17 @@ def val_transforms(examples):
     return examples
 test_ds.set_transform(val_transforms)
 
+print(datetime.now())
+print("------------------ Load data done -----------------")
+
 ## Load model
 mode = 'ResNet' #'ViT' or 'ResNet'
-path = './tune-ResNet-on-NIH/'
 if mode == 'ResNet':
     checkpoint_files = os.listdir(path)
     checkpoint_best, epoch_number_best = None, -1
     for checkpoint_file in checkpoint_files:
+        if 'checkpoint' not in checkpoint_file:
+            continue
         epoch_number = int(checkpoint_file.strip().split('_')[-1])
         if epoch_number_best < epoch_number:
             checkpoint_best = checkpoint_file
@@ -67,9 +78,7 @@ if mode == 'ResNet':
 
 
 ## Threshold
-# path = './tune-ResNet-on-NIH'
-# thresholds = np.loadtxt(path + '/thresholds.txt')
-thresholds = np.array([0.28, 0.03, 0.03, 0.09, 0.01, 0.02, 0.05, 0.07, 0.02, 0.84, 0.01, 0.21, 0.01, 0.08])
+thresholds = np.loadtxt(path + '/thresholds.txt')
 
 ## Evaluate
 def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
@@ -103,10 +112,12 @@ def evaluate(test_dataloader, threshold=0.5, verbose=1):
             y_true = torch.cat((y_true, vlabels), 0)
     return multi_label_metrics(y_pred, y_true.numpy(), threshold=threshold, verbose=verbose)
 
+print("------------------ Starting to evaluate -----------------")
+print(datetime.now())
 
 test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=512)
 evaluate(test_dataloader, threshold=thresholds)
 
-
+print(datetime.now())
 print("When thresholds are all 0.5 ---")
 evaluate(test_dataloader, threshold=0.5)

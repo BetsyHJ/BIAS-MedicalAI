@@ -333,6 +333,8 @@ def optimize_threshold_metric(model, val_dataloader, threshold_grid=None):
 thresholds = optimize_threshold_metric(model, val_dataloader)
 path = './tune-ResNet-on-NIH'
 np.savetxt(path + '/thresholds.txt', thresholds)
+np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
+
 
 # %%
 def evaluate(test_dataloader, threshold=0.5, verbose=1):

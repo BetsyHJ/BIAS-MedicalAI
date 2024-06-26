@@ -17,7 +17,7 @@ def collate_fn(examples):
     labels = torch.tensor([example["labels"] for example in examples]).to(device) # change for one-hot multilabels
     return {"pixel_values": pixel_values, "labels": labels}
 
-def read_dataset_from_folder(root_dir):
+def read_dataset_from_folder(root_dir, label_list=None):
 
     # root_dir = './NIH-small/sample/'
 
@@ -53,10 +53,13 @@ def read_dataset_from_folder(root_dir):
     # Split "Finding Labels" into multiple labels
     metadata_df['Finding Labels'] = metadata_df['Finding Labels'].str.split('|')
 
-    # Get all unique labels
-    all_labels = set(label for sublist in metadata_df['Finding Labels'] for label in sublist)
-    # as no finding label affects so many images, most implementations remove "no finding" label.
-    all_labels.remove('No Finding')
+    if label_list is None:
+        # Get all unique labels
+        all_labels = set(label for sublist in metadata_df['Finding Labels'] for label in sublist)
+        # as no finding label affects so many images, most implementations remove "no finding" label.
+        all_labels.remove('No Finding')
+    else:
+        all_labels = label_list
 
     # ### #TODO: only select some labels
     # all_labels = set(['Infiltration', 'Effusion', 'Atelectasis', 'Nodule', 'Pneumothorax']) 
@@ -105,7 +108,10 @@ def read_dataset_from_folder(root_dir):
     return train_val_ds, test_ds, class_labels
 
 
-def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv'):
+def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None, test_ds_only=False):
+    
+    if test_ds_only:
+        assert label_list is not None
 
     # # load train_val and test (filenames) sets
     f = open(root_dir + 'train_val_list.txt')
@@ -147,12 +153,16 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv'):
     
     # Split "Finding Labels" into multiple labels
     metadata_df['Finding Labels'] = metadata_df['Finding Labels'].str.split('|')
+
     # Get all unique labels
-    all_labels = set(label for sublist in metadata_df['Finding Labels'] for label in sublist)
-    # as no finding label affects so many images, most implementations remove "no finding" label.
-    all_labels.remove('No Finding')
-    # ### #TODO: only select some labels
-    # all_labels = set(['Infiltration', 'Effusion', 'Atelectasis', 'Nodule', 'Pneumothorax']) 
+    if label_list is None:
+        all_labels = set(label for sublist in metadata_df['Finding Labels'] for label in sublist)
+        # as no finding label affects so many images, most implementations remove "no finding" label.
+        all_labels.remove('No Finding')
+        # ### #TODO: only select some labels
+        # all_labels = set(['Infiltration', 'Effusion', 'Atelectasis', 'Nodule', 'Pneumothorax']) 
+    else:
+        all_labels = label_list
     # Create a ClassLabel feature for each unique label
     class_labels = ClassLabel(names=list(all_labels))
 
@@ -165,29 +175,36 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv'):
     # only get the following info
     metadata_df = metadata_df[['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']]
 
-    # split metadata into train and test according to train_filenames and test_filenames
-    train_indices = metadata_df['Image Index'].isin(train_filenames)
-    train_df = metadata_df[train_indices]
-    test_df = metadata_df[metadata_df['Image Index'].isin(test_filenames)]
-
-    # train_val_ds = Dataset.from_pandas(train_df, split='train')
-    # test_ds = Dataset.from_pandas(test_df, split='test')
-
-    print("Training and test sets:", len(train_df), len(test_df))
-
     # from df to dict
     def df_to_dict(df, keys=['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']):
         data_dict = {}
         for k in keys:
             data_dict[k] = list(df[k].values)
         return data_dict
+    # split metadata into train and test according to train_filenames and test_filenames
+    if not test_ds_only:
+        train_indices = metadata_df['Image Index'].isin(train_filenames)
+        train_df = metadata_df[train_indices]
+        test_df = metadata_df[metadata_df['Image Index'].isin(test_filenames)]
+
+        # train_val_ds = Dataset.from_pandas(train_df, split='train')
+        # test_ds = Dataset.from_pandas(test_df, split='test')
+
+        print("Training and test sets:", len(train_df), len(test_df))
+
+        train_val_ds = Dataset.from_dict(df_to_dict(train_df), split='train')
+        test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+
+        train_val_ds = train_val_ds.cast_column("image", Image(mode="RGB"))
+        test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+
+        print(train_val_ds[0])
+        return train_val_ds, test_ds, class_labels
+
+    else:
+        test_df = metadata_df[metadata_df['Image Index'].isin(test_filenames)]
+        print("Only load test sets:", len(test_df))
+        test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+        test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+        return test_ds, class_labels
     
-    train_val_ds = Dataset.from_dict(df_to_dict(train_df), split='train')
-    test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
-
-    train_val_ds = train_val_ds.cast_column("image", Image(mode="RGB"))
-    test_ds = test_ds.cast_column("image", Image(mode="RGB"))
-
-    print(train_val_ds[0])
-
-    return train_val_ds, test_ds, class_labels
