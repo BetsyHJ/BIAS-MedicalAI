@@ -22,6 +22,7 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 from mymodel.resnet import ResNetMultiLabel
 from util.data import read_dataset_from_folder, read_NIH_large
 from util.data import collate_fn
+from evaluator import draw_roc_auc_curves
 
 print(datetime.now())
 
@@ -110,6 +111,7 @@ def evaluate(test_dataloader, threshold=0.5, verbose=1):
             voutputs = model(vinputs).cpu()
             y_pred = torch.cat((y_pred, voutputs), 0)
             y_true = torch.cat((y_true, vlabels), 0)
+    draw_roc_auc_curves(y_true.numpy(), y_pred, target_names = class_labels.names)
     return multi_label_metrics(y_pred, y_true.numpy(), threshold=threshold, verbose=verbose)
 
 print("------------------ Starting to evaluate -----------------")
