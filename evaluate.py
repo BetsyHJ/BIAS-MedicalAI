@@ -91,11 +91,16 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
     # finally, compute metrics
     y_true = labels
     f1_micro_average = f1_score(y_true=y_true, y_pred=y_pred, average='micro')
-    roc_auc = roc_auc_score(y_true, probs, average = 'micro')
+    roc_auc_micro = roc_auc_score(y_true, probs, average = 'micro')
+    try:
+        roc_auc_macro = roc_auc_score(y_true, probs, average = 'macro')
+    except ValueError:
+        roc_auc_macro = '0.0'
     accuracy = accuracy_score(y_true, y_pred)
     # return as dictionary
     metrics = {'f1': f1_micro_average,
-               'roc_auc': roc_auc,
+               'roc_auc_micro': roc_auc_micro,
+               'roc_auc_macro': roc_auc_macro,
                'accuracy': accuracy}
     if verbose:
         print(classification_report(y_true=y_true.astype(int), y_pred=y_pred, target_names=class_labels.names))
