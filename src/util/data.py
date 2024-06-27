@@ -137,7 +137,7 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None,
     for folder in os.listdir(root_dir):
         if os.path.isdir(os.path.join(root_dir, folder)) and ('.DS_' not in folder):
             images_dir.append(os.path.join(root_dir, folder) + '/images/')
-            for image_file in os.listdir(images_dir[-1])[:100]: # TODO: just for check
+            for image_file in os.listdir(images_dir[-1]): # TODO: just for check
                 image_path = os.path.join(images_dir[-1] , image_file)
                 if image_file.lower().endswith(('png')):
                     image_paths.append(image_path)
