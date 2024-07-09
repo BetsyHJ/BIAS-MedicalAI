@@ -34,11 +34,14 @@ warnings.filterwarnings("ignore")  # TODO: check
 from util.data import read_dataset_from_folder, read_NIH_large
 from util.data import collate_fn
 
+print(datetime.now())
 
 # root_dir = './NIH-small/sample/'
 # train_val_ds, test_ds, class_labels = read_dataset_from_folder(root_dir)
 root_dir = './NIH-large/'
 train_val_ds, test_ds, class_labels = read_NIH_large(root_dir)
+
+path = './tune-ResNet-on-NIH'
 
 # # train-valid split, ratio: 6:2
 train_val_ds_ = train_val_ds.train_test_split(test_size=0.25, seed=42)
@@ -53,12 +56,13 @@ train_ds = train_val_ds_['train']
 
 # %%
 
-size = 224
+size = 256
 
 _train_transforms = Compose(
         [
             # RandomResizedCrop(size),
-            # RandomHorizontalFlip(),
+            CenterCrop(size),
+            RandomHorizontalFlip(),
             Resize(size),
             ToTensor(),
             # normalize,
@@ -67,8 +71,8 @@ _train_transforms = Compose(
 
 _val_transforms = Compose(
         [
+            CenterCrop(size),
             Resize(size),
-            # CenterCrop(size),
             ToTensor(),
             # normalize,
         ]
@@ -148,8 +152,8 @@ elif torch.backends.mps.is_available():
     device = 'mps'
 print("We are using device:", device)
 
-train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=512)
-val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=512)
+train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=16)
+val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=16)
 
 # %%
 batch = next(iter(train_dataloader))
@@ -168,7 +172,7 @@ for k,v in batch.items():
 class ResNetMultiLabel(nn.Module):
     def __init__(self, num_classes):
         super(ResNetMultiLabel, self).__init__()
-        self.resnet = models.resnet18(pretrained=True)
+        self.resnet = models.resnet50(pretrained=True)
         self.resnet.fc = nn.Linear(self.resnet.fc.in_features, num_classes)
         
     def forward(self, x):
@@ -215,6 +219,8 @@ EPOCHS = 10
 
 best_vloss = 1_000_000.
 
+print(datetime.now())
+
 for epoch in range(EPOCHS):
     # pbar.set_description('EPOCH {}:'.format(epoch_number + 1))
 
@@ -253,7 +259,6 @@ for epoch in range(EPOCHS):
 
     # Track best performance, and save the model's state
     if avg_vloss < best_vloss:
-        path = './tune-ResNet-on-NIH'
         if not os.path.exists(path):
             os.makedirs(path)
         best_vloss = avg_vloss
@@ -329,9 +334,9 @@ def optimize_threshold_metric(model, val_dataloader, threshold_grid=None):
     print("Optimal thresholds for each category:", optimal_thresholds)
     return optimal_thresholds
 
+print(datetime.now())
 
 thresholds = optimize_threshold_metric(model, val_dataloader)
-path = './tune-ResNet-on-NIH'
 np.savetxt(path + '/thresholds.txt', thresholds)
 np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
@@ -370,3 +375,5 @@ evaluate(test_dataloader, threshold=0.5)
 # # %%
 # test_dataloader_male = DataLoader(test_ds_male, collate_fn=collate_fn, batch_size=32)
 # evaluate(test_dataloader_male, threshold=thresholds)
+
+print(datetime.now())

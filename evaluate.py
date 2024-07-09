@@ -36,16 +36,17 @@ print("We are using device:", device)
 ## Load data
 root_dir = './NIH-large/'
 path = './tune-ResNet-on-NIH/'
+# path = './tune-ResNet50-on-NIH/'
 
 label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
 print("label list:", label_list)
 test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True)
 num_labels = len(class_labels.names)
 
-size = 224
+# size = 224
 _val_transforms = Compose(
         [
-            Resize(size),
+            # Resize(size),
             # CenterCrop(size),
             ToTensor(),
             # normalize,
@@ -122,7 +123,7 @@ def evaluate(test_dataloader, threshold=0.5, verbose=1):
 print("------------------ Starting to evaluate -----------------")
 print(datetime.now())
 
-test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=512)
+test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=32)
 evaluate(test_dataloader, threshold=thresholds)
 
 print(datetime.now())
