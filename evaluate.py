@@ -10,6 +10,7 @@ from torchvision.transforms import (CenterCrop,
                                     Compose, 
                                     Normalize, 
                                     RandomHorizontalFlip,
+                                    RandomRotation,
                                     RandomResizedCrop, 
                                     Resize, 
                                     ToTensor)
@@ -35,23 +36,26 @@ print("We are using device:", device)
 
 ## Load data
 root_dir = './NIH-large/'
-path = './tune-ResNet-on-NIH/'
+# path = './tune-ResNet-on-NIH/'
 # path = './tune-ResNet50-on-NIH/'
+path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
 
 label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
 print("label list:", label_list)
 test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True)
 num_labels = len(class_labels.names)
 
-# size = 224
+normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
 _val_transforms = Compose(
         [
-            # Resize(size),
-            # CenterCrop(size),
+            Resize(256),
+            CenterCrop(256),
             ToTensor(),
-            # normalize,
+            normalize,
         ]
     )
+
 def val_transforms(examples):
     examples['pixel_values'] = [_val_transforms(image.convert("RGB")) for image in examples['image']]
     return examples

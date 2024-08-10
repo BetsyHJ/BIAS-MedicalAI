@@ -1,11 +1,14 @@
-from datasets import load_dataset, Image
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
+from datasets import load_dataset, Image
 import numpy as np
 from datasets.features import ClassLabel, Sequence
 from torchvision.transforms import (CenterCrop, 
                                     Compose, 
                                     Normalize, 
                                     RandomHorizontalFlip,
+                                    RandomRotation,
                                     RandomResizedCrop, 
                                     Resize, 
                                     ToTensor)
@@ -33,6 +36,7 @@ warnings.filterwarnings("ignore")  # TODO: check
 ## self-defined functions and classes
 from util.data import read_dataset_from_folder, read_NIH_large
 from util.data import collate_fn
+from mymodel.resnet import ResNetMultiLabel
 
 print(datetime.now())
 
@@ -41,10 +45,17 @@ print(datetime.now())
 root_dir = './NIH-large/'
 train_val_ds, test_ds, class_labels = read_NIH_large(root_dir)
 
-path = './tune-ResNet-on-NIH'
+# path = './tune-ResNet50-on-NIH'
+# path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
+path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
+
+if not os.path.exists(path):
+    os.makedirs(path)
 
 # # train-valid split, ratio: 6:2
-train_val_ds_ = train_val_ds.train_test_split(test_size=0.25, seed=42)
+ratio = 0.125
+print("Setting %.2f of training set as validation, default ratio is 0.25" % ratio)
+train_val_ds_ = train_val_ds.train_test_split(test_size=ratio, seed=42)
 val_ds = train_val_ds_['test']
 train_ds = train_val_ds_['train']
 
@@ -56,25 +67,25 @@ train_ds = train_val_ds_['train']
 
 # %%
 
-size = 256
+normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
 _train_transforms = Compose(
         [
-            # RandomResizedCrop(size),
-            CenterCrop(size),
             RandomHorizontalFlip(),
-            Resize(size),
+            RandomRotation(10),
+            Resize(256),
+            CenterCrop(256),
             ToTensor(),
-            # normalize,
+            normalize,
         ]
     )
 
 _val_transforms = Compose(
         [
-            CenterCrop(size),
-            Resize(size),
+            Resize(256),
+            CenterCrop(256),
             ToTensor(),
-            # normalize,
+            normalize,
         ]
     )
 
@@ -90,59 +101,6 @@ def val_transforms(examples):
 train_ds.set_transform(train_transforms)
 val_ds.set_transform(val_transforms)
 test_ds.set_transform(val_transforms)
-
-# %%
-# from monai.transforms import (
-#     Activations,
-#     EnsureChannelFirst,
-#     AsDiscrete,
-#     Compose,
-#     LoadImage,
-#     RandFlip,
-#     RandRotate,
-#     RandZoom,
-#     ScaleIntensity,
-# )
-# import torch
-# import torch.nn as nn
-
-# # # following: https://github.com/Project-MONAI/tutorials/blob/main/2d_classification/mednist_tutorial.ipynb
-
-# _train_transforms = Compose(
-#     [
-#         RandRotate(range_x=np.pi / 12, prob=0.5, keep_size=True),
-#         RandFlip(spatial_axis=0, prob=0.5),
-#         RandZoom(min_zoom=0.9, max_zoom=1.1, prob=0.5),
-#     ]
-# )
-
-# _val_transforms = Compose([])
-
-# def train_transforms(examples):
-#     examples['pixel_values'] = [_train_transforms(image) for image in examples['image']]
-#     return examples
-
-# def val_transforms(examples):
-#     examples['pixel_values'] = [_val_transforms(image) for image in examples['image']]
-#     return examples
-
-# # Set the transforms
-# train_ds.set_transform(train_transforms)
-# val_ds.set_transform(val_transforms)
-# test_ds.set_transform(val_transforms)
-
-# %%
-# from monai.transforms import LoadImageD, EnsureChannelFirstD, ScaleIntensityD, Compose
-
-# transform = Compose(
-#     [
-#         LoadImageD(keys="image", image_only=True),
-#         EnsureChannelFirstD(keys="image"),
-#         ScaleIntensityD(keys="image"),
-#     ]
-# )
-# transform(train_ds[0]['image'])
-
 # %%
 
 device = 'cpu'
@@ -152,31 +110,21 @@ elif torch.backends.mps.is_available():
     device = 'mps'
 print("We are using device:", device)
 
-train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=16)
+train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=16, shuffle=True)
 val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=16)
 
 # %%
-batch = next(iter(train_dataloader))
-for k,v in batch.items():
-  if isinstance(v, torch.Tensor):
-    print(k, v.shape)
-    if k == 'labels':
-      print(v)
+# batch = next(iter(train_dataloader))
+# for k,v in batch.items():
+#   if isinstance(v, torch.Tensor):
+#     print(k, v.shape)
+#     if k == 'labels':
+#       print(v)
 
 # %% [markdown]
 # ### Define the model
 
 # %%
-
-# Define the model
-class ResNetMultiLabel(nn.Module):
-    def __init__(self, num_classes):
-        super(ResNetMultiLabel, self).__init__()
-        self.resnet = models.resnet50(pretrained=True)
-        self.resnet.fc = nn.Linear(self.resnet.fc.in_features, num_classes)
-        
-    def forward(self, x):
-        return self.resnet(x)
 
 # Instantiate the model
 num_labels = len(class_labels.names)
@@ -184,7 +132,6 @@ model = ResNetMultiLabel(num_labels).to(device)
 
 
 criterion = nn.BCEWithLogitsLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
 
 def train_one_epoch(epoch_index, tb_writer):
@@ -213,20 +160,22 @@ def train_one_epoch(epoch_index, tb_writer):
 
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 writer = SummaryWriter('logs/fashion_trainer_{}'.format(timestamp))
-epoch_number = 0
 
 EPOCHS = 10
+LR = 1e-4 # 5e-5
+print("LR:", LR, '; Epochs:', EPOCHS)
 
+best_epoch = -1
 best_vloss = 1_000_000.
 
 print(datetime.now())
 
 for epoch in range(EPOCHS):
-    # pbar.set_description('EPOCH {}:'.format(epoch_number + 1))
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
     # Make sure gradient tracking is on, and do a pass over the data
     model.train(True)
-    avg_loss = train_one_epoch(epoch_number, writer)
+    avg_loss = train_one_epoch(epoch, writer)
 
     running_vloss = 0.0
     roc_auc, f1 = 0.0, 0.0
@@ -248,29 +197,41 @@ for epoch in range(EPOCHS):
             running_vloss += vloss
 
     avg_vloss = running_vloss / (i + 1)
-    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / len(val_dataloader), f1 / len(val_dataloader)))
+    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)))
 
     # Log the running loss averaged per batch
     # for both training and validation
     writer.add_scalars('Training vs. Validation Loss',
                     { 'Training' : avg_loss, 'Validation' : avg_vloss },
-                    epoch_number + 1)
+                    epoch + 1)
     writer.flush()
 
     # Track best performance, and save the model's state
+    # avg_vloss = - roc_auc / (i+1) # track best model with best auc score
     if avg_vloss < best_vloss:
         if not os.path.exists(path):
             os.makedirs(path)
         best_vloss = avg_vloss
-        model_path = path + '/checkpoint_{}_{}'.format(timestamp, epoch_number)
+        best_epoch = epoch
+        model_path = path + '/checkpoint_{}_{}'.format(timestamp, epoch)
         torch.save(model.state_dict(), model_path)
-
-    epoch_number += 1
+    
+    # # decay lr when no val loss improvement in 3 epochs; break if no val loss improvement in 5 epochs
+    # if ((epoch - best_epoch) >= 3):
+    #     if avg_vloss > best_vloss:
+    #         print("decay loss from " + str(LR) + " to " + str(LR / 2) + " as not seeing improvement in val loss")
+    #         LR = LR / 2
+    #         print("created new optimizer with LR " + str(LR))
+    #         if ((epoch - best_epoch) >= 5):
+    #             print("no improvement in 5 epochs, break")
+    #             break
 
 # %% [markdown]
 # ### Evaluate on Testds 
 # Consider metrics for multi-class classification
-# 
+# Load best model for evaluation 
+model.eval()
+model.load_state_dict(torch.load(model_path))
 
 # %%
     
@@ -292,6 +253,7 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
                'accuracy': accuracy}
     if verbose:
         print(classification_report(y_true=y_true.astype(int), y_pred=y_pred, target_names=class_labels.names))
+        print(metrics)
     # labels = train_ds.features['labels_list']
     # cm = confusion_matrix(y_true, y_pred)
     # disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
