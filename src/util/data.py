@@ -2,8 +2,19 @@ from datasets import load_dataset, Image, Dataset, DatasetDict, concatenate_data
 from datasets.features import ClassLabel, Sequence
 from PIL import Image as PIL_Image
 import os
+import numpy as np
 import pandas as pd
 import torch
+
+from PIL import Image as PIL_Image
+
+from datetime import datetime
+# import multiprocessing as mp
+# from multiprocessing import Pool
+import multiprocess as mp
+
+import zipfile
+
 
 device = 'cpu'
 if torch.cuda.is_available():
@@ -108,18 +119,23 @@ def read_dataset_from_folder(root_dir, label_list=None):
     return train_val_ds, test_ds, class_labels
 
 
-def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None, test_ds_only=False):
+def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None, test_ds_only=False, split_dir=None):
     
     if test_ds_only:
         assert label_list is not None
 
     # # load train_val and test (filenames) sets
+    if split_dir:
+        root_dir_ = root_dir
+        root_dir += split_dir + '/'
     f = open(root_dir + 'train_val_list.txt')
     train_filenames = [x.strip() for x in f.readlines()]
     f.close()
     f = open(root_dir + 'test_list.txt')
     test_filenames = [x.strip() for x in f.readlines()]
     f.close()
+    if split_dir:
+        root_dir = root_dir_
 
     # Load the metadata from the CSV file
     metadata_file = os.path.join(root_dir, meta_file)
@@ -135,7 +151,7 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None,
     image_paths = []
     filenames_cor = []
     for folder in os.listdir(root_dir):
-        if os.path.isdir(os.path.join(root_dir, folder)) and ('.DS_' not in folder):
+        if os.path.isdir(os.path.join(root_dir, folder)) and ('images_' in folder):
             images_dir.append(os.path.join(root_dir, folder) + '/images/')
             for image_file in os.listdir(images_dir[-1]): # TODO: just for check
                 image_path = os.path.join(images_dir[-1] , image_file)
@@ -208,3 +224,69 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None,
         test_ds = test_ds.cast_column("image", Image(mode="RGB"))
         return test_ds, class_labels
     
+
+
+def read_CXP(root_dir, label_list=None, test_ds_only=False, split_dir=None):
+    
+    if test_ds_only:
+        assert label_list is not None
+
+    # # load train_val and test (filenames) sets
+    assert split_dir != None # for CXP, we randomly split the data, as their original testset is human-annotated.
+
+    train_val_df = pd.read_csv(split_dir + 'train_val.csv')
+    test_df = pd.read_csv(split_dir + 'test.csv')
+    print("The number of images in train_val and test set are %d and %d" % (len(train_val_df), len(test_df)))
+    
+    if label_list is None:
+        label_list = [ 'No Finding', 'Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity', 'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis', 'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices']
+
+    # Create a ClassLabel feature for each unique label
+    class_labels = ClassLabel(names=label_list)
+    # Define the label feature as a sequence of ClassLabel
+    labels_type = Sequence(class_labels)
+    num_labels = len(class_labels.names)
+
+    label_values = train_val_df.loc[:, label_list].values
+    label_values = np.where(label_values > 0, 1.0, 0.0) # positive (1), negative (0), uncertain (-1), and unmentioned (blank) classes; we set 1 to 1, others to 0
+    train_val_df['labels'] = [x for x in label_values]
+    
+    label_values = test_df[label_list].values
+    label_values = np.where(label_values > 0, 1.0, 0.0)
+    test_df['labels'] = [x for x in label_values]
+
+    train_val_df.rename(columns={'Path':'image'}, inplace=True)
+    test_df.rename(columns={'Path':'image'}, inplace=True)
+
+    # only get the following info: Path,Sex,Age
+    train_val_df = train_val_df[['image', 'Sex', 'Age', 'labels']]
+    test_df = test_df[['image', 'Sex', 'Age', 'labels']]
+
+    # from df to dict
+    def df_to_dict(df, keys=['image', 'Sex', 'Age', 'labels']):
+        data_dict = {}
+        for k in keys:
+            data_dict[k] = list(df[k].values)
+        return data_dict
+
+    # rename image path to the correct local path
+    train_val_df['image'] = train_val_df['image'].map(lambda x: x.replace("CheXpert-v1.0/train/", root_dir))
+    test_df['image'] = test_df['image'].map(lambda x: x.replace("CheXpert-v1.0/train/", root_dir))
+
+    # load images
+    if not test_ds_only:
+        train_val_ds = Dataset.from_dict(df_to_dict(train_val_df), split='train')
+        test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+        
+        train_val_ds = train_val_ds.cast_column("image", Image(mode="RGB"))
+        test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+
+        print(train_val_ds[0])
+        print(test_ds[0])
+        return train_val_ds, test_ds, class_labels
+
+    else:
+        print("Only load test sets:", len(test_df))
+        test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+        test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+        return test_ds, class_labels

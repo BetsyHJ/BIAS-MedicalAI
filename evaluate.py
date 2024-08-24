@@ -21,6 +21,8 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 
 ## self-defined functions and classes
 from mymodel.resnet import ResNetMultiLabel
+from mymodel.densenet import DenseNetMultiLabel
+from mymodel.vision_transformer import ViTMultiLabel
 from util.data import read_dataset_from_folder, read_NIH_large
 from util.data import collate_fn
 from evaluator import draw_roc_auc_curves
@@ -34,23 +36,41 @@ elif torch.backends.mps.is_available():
     device = 'mps'
 print("We are using device:", device)
 
-## Load data
-root_dir = './NIH-large/'
-# path = './tune-ResNet-on-NIH/'
-# path = './tune-ResNet50-on-NIH/'
-path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
+data_name = 'CXP' # 'NIH' or 'CXP'
+ModelType = "ViT"  # select 'ResNet50','densenet', 'ViT'
 
-label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
-print("label list:", label_list)
-test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True)
+## Load data
+if data_name == 'NIH':
+    root_dir = './NIH-large/'
+    split_dir = 'split_random' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
+
+    # path = './tune-ResNet-on-NIH/'
+    # path = './tune-ResNet50-on-NIH/'
+    # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
+    path = './tune-%s-on-NIH-train-shuffle' % ModelType
+    path += '_randomsplit/' if split_dir else '/'
+
+    label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
+    print("label list:", label_list)
+    test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
+elif data_name == 'CXP':
+    root_dir = './CXP/CheXpert-v1.0/'
+    split_dir = './CXP/split_random/'
+    path = './tune-%s-on-%s-train-shuffle_randomsplit/' % (ModelType, data_name)
+    label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
+    print("label list:", label_list)
+    test_ds, class_labels = read_CXP(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
+
 num_labels = len(class_labels.names)
 
 normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
+img_size = 256 if ModelType != 'ViT' else 224
+
 _val_transforms = Compose(
         [
-            Resize(256),
-            CenterCrop(256),
+            Resize(img_size),
+            CenterCrop(img_size),
             ToTensor(),
             normalize,
         ]
@@ -65,22 +85,28 @@ print(datetime.now())
 print("------------------ Load data done -----------------")
 
 ## Load model
-mode = 'ResNet' #'ViT' or 'ResNet'
-if mode == 'ResNet':
-    checkpoint_files = os.listdir(path)
-    checkpoint_best, epoch_number_best = None, -1
-    for checkpoint_file in checkpoint_files:
-        if 'checkpoint' not in checkpoint_file:
-            continue
-        epoch_number = int(checkpoint_file.strip().split('_')[-1])
-        if epoch_number_best < epoch_number:
-            checkpoint_best = checkpoint_file
-            epoch_number_best = epoch_number
-    # define model
+# get checkpoint model
+checkpoint_files = os.listdir(path)
+checkpoint_best, epoch_number_best = None, -1
+for checkpoint_file in checkpoint_files:
+    if 'checkpoint' not in checkpoint_file:
+        continue
+    epoch_number = int(checkpoint_file.strip().split('_')[-1])
+    if epoch_number_best < epoch_number:
+        checkpoint_best = checkpoint_file
+        epoch_number_best = epoch_number
+
+# define model
+if ModelType == 'ResNet':
     model = ResNetMultiLabel(num_labels).to(device)
-    # load model
-    model.load_state_dict(torch.load(path + checkpoint_best))
-    model.eval()
+elif ModelType == 'densenet':
+    model = DenseNetMultiLabel(num_labels).to(device)
+elif ModelType == 'ViT':
+    model = ViTMultiLabel(num_labels).to(device)
+
+# load model
+model.load_state_dict(torch.load(path + checkpoint_best))
+model.eval()
 
 
 ## Threshold
@@ -112,7 +138,7 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
         print(metrics)
     return metrics
 
-def evaluate(test_dataloader, threshold=0.5, verbose=1):
+def evaluate(test_dataloader, threshold=0.5, verbose=1, draw_curve=True):
     y_true = torch.tensor([], dtype=torch.long)
     y_pred = torch.tensor([])
     with torch.no_grad():
@@ -121,7 +147,8 @@ def evaluate(test_dataloader, threshold=0.5, verbose=1):
             voutputs = model(vinputs).cpu()
             y_pred = torch.cat((y_pred, voutputs), 0)
             y_true = torch.cat((y_true, vlabels), 0)
-    draw_roc_auc_curves(y_true.numpy(), y_pred, target_names = class_labels.names)
+    if draw_curve:
+        draw_roc_auc_curves(y_true.numpy(), y_pred, target_names = class_labels.names, ModelType=ModelType, data_name=data_name)
     return multi_label_metrics(y_pred, y_true.numpy(), threshold=threshold, verbose=verbose)
 
 print("------------------ Starting to evaluate -----------------")
@@ -132,4 +159,4 @@ evaluate(test_dataloader, threshold=thresholds)
 
 print(datetime.now())
 print("When thresholds are all 0.5 ---")
-evaluate(test_dataloader, threshold=0.5)
+evaluate(test_dataloader, threshold=0.5, draw_curve=False)

@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 
 from datasets import load_dataset, Image
 import numpy as np
@@ -34,27 +34,80 @@ import warnings
 warnings.filterwarnings("ignore")  # TODO: check
 
 ## self-defined functions and classes
-from util.data import read_dataset_from_folder, read_NIH_large
+from util.data import read_dataset_from_folder, read_NIH_large, read_CXP
 from util.data import collate_fn
 from mymodel.resnet import ResNetMultiLabel
+from mymodel.densenet import DenseNetMultiLabel
+from mymodel.vision_transformer import ViTMultiLabel
 
 print(datetime.now())
 
-# root_dir = './NIH-small/sample/'
-# train_val_ds, test_ds, class_labels = read_dataset_from_folder(root_dir)
-root_dir = './NIH-large/'
-train_val_ds, test_ds, class_labels = read_NIH_large(root_dir)
+ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT'
+
+
+normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+img_size = 256 if ModelType != 'ViT' else 224
+
+_train_transforms = Compose(
+        [
+            RandomHorizontalFlip(),
+            RandomRotation(10),
+            Resize(img_size),
+            CenterCrop(img_size),
+            ToTensor(),
+            normalize,
+        ]
+    )
+
+_val_transforms = Compose(
+        [
+            Resize(img_size),
+            CenterCrop(img_size),
+            ToTensor(),
+            normalize,
+        ]
+    )
+
+
+# # # load data
+data_name = 'CXP'
+
+# # root_dir = './NIH-small/sample/'
+# # train_val_ds, test_ds, class_labels = read_dataset_from_folder(root_dir)
+if data_name == 'NIH':
+    root_dir = './NIH-large/'
+    split_dir = None # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
+    train_val_ds, test_ds, class_labels = read_NIH_large(root_dir, split_dir=split_dir)
+elif data_name == 'CXP':
+    root_dir = './CXP/CheXpert-v1.0/'
+    split_dir = './CXP/split_random/'
+    print(datetime.now(), " ---------- starting to load data ----------")
+    train_val_ds, test_ds, class_labels = read_CXP(root_dir, split_dir=split_dir)
+    print(datetime.now(), " ---------- load data done ----------")
+
+EPOCHS = 10
+LR = 1e-4 # 1e-4 # 5e-5
+print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
+
+ratio = 0.125
+if split_dir: # make sure ratio of train/val/test split is 8:1:1
+    ratio = 0.111
+print("Setting %.2f of training set as validation, default ratio is 0.25" % ratio, flush=True)
 
 # path = './tune-ResNet50-on-NIH'
 # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
-path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
+path = './tune-%s-on-%s-train-shuffle-lr%.e' % (ModelType, data_name, LR)
+if split_dir:
+    path += '_randomsplit/'
+else:
+    path += '/'
+print("Checkpoints stored in: ", path)
 
 if not os.path.exists(path):
     os.makedirs(path)
 
-# # train-valid split, ratio: 6:2
-ratio = 0.125
-print("Setting %.2f of training set as validation, default ratio is 0.25" % ratio)
+# # train-valid split, value 0.25 for ratio: 6:2:2, value 0.125 for 7:1:2
 train_val_ds_ = train_val_ds.train_test_split(test_size=ratio, seed=42)
 val_ds = train_val_ds_['test']
 train_ds = train_val_ds_['train']
@@ -67,34 +120,14 @@ train_ds = train_val_ds_['train']
 
 # %%
 
-normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
-_train_transforms = Compose(
-        [
-            RandomHorizontalFlip(),
-            RandomRotation(10),
-            Resize(256),
-            CenterCrop(256),
-            ToTensor(),
-            normalize,
-        ]
-    )
-
-_val_transforms = Compose(
-        [
-            Resize(256),
-            CenterCrop(256),
-            ToTensor(),
-            normalize,
-        ]
-    )
-
 def train_transforms(examples):
-    examples['pixel_values'] = [_train_transforms(image.convert("RGB")) for image in examples['image']]
+    # examples['pixel_values'] = [_train_transforms(image.convert("RGB")) for image in examples['image']]
+    examples['pixel_values'] = [_train_transforms(image) for image in examples['image']]
     return examples
 
 def val_transforms(examples):
-    examples['pixel_values'] = [_val_transforms(image.convert("RGB")) for image in examples['image']]
+    # examples['pixel_values'] = [_val_transforms(image.convert("RGB")) for image in examples['image']]
+    examples['pixel_values'] = [_val_transforms(image) for image in examples['image']]
     return examples
 
 # Set the transforms
@@ -108,10 +141,12 @@ if torch.cuda.is_available():
     device = 'cuda'
 elif torch.backends.mps.is_available():
     device = 'mps'
-print("We are using device:", device)
+print("We are using device:", device, flush=True)
 
-train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=16, shuffle=True)
-val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=16)
+batch_size = 128 # default: 16
+print("Using batch_size: %d, default: 16" % batch_size)
+train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size)
 
 # %%
 # batch = next(iter(train_dataloader))
@@ -128,7 +163,12 @@ val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=16)
 
 # Instantiate the model
 num_labels = len(class_labels.names)
-model = ResNetMultiLabel(num_labels).to(device)
+if ModelType == 'ResNet50':
+    model = ResNetMultiLabel(num_labels).to(device)
+elif ModelType == 'densenet':
+    model = DenseNetMultiLabel(num_labels).to(device)
+elif ModelType == 'ViT':
+    model = ViTMultiLabel(num_labels).to(device)
 
 
 criterion = nn.BCEWithLogitsLoss()
@@ -161,14 +201,11 @@ def train_one_epoch(epoch_index, tb_writer):
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 writer = SummaryWriter('logs/fashion_trainer_{}'.format(timestamp))
 
-EPOCHS = 10
-LR = 1e-4 # 5e-5
-print("LR:", LR, '; Epochs:', EPOCHS)
 
 best_epoch = -1
 best_vloss = 1_000_000.
 
-print(datetime.now())
+print(datetime.now(), flush=True)
 
 for epoch in range(EPOCHS):
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -197,7 +234,7 @@ for epoch in range(EPOCHS):
             running_vloss += vloss
 
     avg_vloss = running_vloss / (i + 1)
-    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)))
+    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)
 
     # Log the running loss averaged per batch
     # for both training and validation
@@ -225,6 +262,11 @@ for epoch in range(EPOCHS):
     #         if ((epoch - best_epoch) >= 5):
     #             print("no improvement in 5 epochs, break")
     #             break
+    # # early stop
+    if ((epoch - best_epoch) >= 3):
+        print("no improvement in 3 epochs, break")
+        break
+
 
 # %% [markdown]
 # ### Evaluate on Testds 
