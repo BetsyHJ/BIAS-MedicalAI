@@ -1,4 +1,6 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+
 import sys
 sys.path.append('./src/')
 import numpy as np
@@ -23,7 +25,7 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
-from util.data import read_dataset_from_folder, read_NIH_large
+from util.data import read_dataset_from_folder, read_NIH_large, read_CXP
 from util.data import collate_fn
 from evaluator import draw_roc_auc_curves
 
@@ -37,7 +39,7 @@ elif torch.backends.mps.is_available():
 print("We are using device:", device)
 
 data_name = 'CXP' # 'NIH' or 'CXP'
-ModelType = "ViT"  # select 'ResNet50','densenet', 'ViT'
+ModelType = 'ViT'  # select 'ResNet50','densenet', 'ViT'
 
 ## Load data
 if data_name == 'NIH':
@@ -56,9 +58,10 @@ if data_name == 'NIH':
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
     split_dir = './CXP/split_random/'
-    path = './tune-%s-on-%s-train-shuffle_randomsplit/' % (ModelType, data_name)
-    label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
-    print("label list:", label_list)
+    path = './tune-%s-on-CXP-train-shuffle-lr1e-05_randomsplit/' % (ModelType)
+    label_list = list(np.loadtxt(path + 'label_list.txt', delimiter='\t', dtype='str'))
+    print("Loading checkpoint from:", path, flush=True)
+    print("label list:", label_list, flush=True)
     test_ds, class_labels = read_CXP(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
 
 num_labels = len(class_labels.names)
@@ -97,7 +100,7 @@ for checkpoint_file in checkpoint_files:
         epoch_number_best = epoch_number
 
 # define model
-if ModelType == 'ResNet':
+if ModelType == 'ResNet50':
     model = ResNetMultiLabel(num_labels).to(device)
 elif ModelType == 'densenet':
     model = DenseNetMultiLabel(num_labels).to(device)
@@ -154,7 +157,7 @@ def evaluate(test_dataloader, threshold=0.5, verbose=1, draw_curve=True):
 print("------------------ Starting to evaluate -----------------")
 print(datetime.now())
 
-test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=32)
+test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=256)
 evaluate(test_dataloader, threshold=thresholds)
 
 print(datetime.now())

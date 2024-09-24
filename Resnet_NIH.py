@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '2'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 from datasets import load_dataset, Image
 import numpy as np
@@ -42,12 +42,11 @@ from mymodel.vision_transformer import ViTMultiLabel
 
 print(datetime.now())
 
-ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT'
-
+ModelType = 'ViT16_base_swag'  # select 'ResNet50','densenet', 'ViT16_base' or 'ViT', 'ViT16_base_swag'
 
 normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-img_size = 256 if ModelType != 'ViT' else 224
+img_size = 256 if 'ViT' not in ModelType else 224
 
 _train_transforms = Compose(
         [
@@ -86,8 +85,8 @@ elif data_name == 'CXP':
     train_val_ds, test_ds, class_labels = read_CXP(root_dir, split_dir=split_dir)
     print(datetime.now(), " ---------- load data done ----------")
 
-EPOCHS = 10
-LR = 1e-4 # 1e-4 # 5e-5
+EPOCHS = 20
+LR = 1e-5 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
 ratio = 0.125
@@ -143,7 +142,7 @@ elif torch.backends.mps.is_available():
     device = 'mps'
 print("We are using device:", device, flush=True)
 
-batch_size = 128 # default: 16
+batch_size = 16 # default: 16
 print("Using batch_size: %d, default: 16" % batch_size)
 train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=batch_size, shuffle=True)
 val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size)
@@ -167,8 +166,12 @@ if ModelType == 'ResNet50':
     model = ResNetMultiLabel(num_labels).to(device)
 elif ModelType == 'densenet':
     model = DenseNetMultiLabel(num_labels).to(device)
-elif ModelType == 'ViT':
-    model = ViTMultiLabel(num_labels).to(device)
+elif 'ViT' in ModelType:
+    if 'ViT_base' or 'ViT16_base':
+        weight_v = 'base'
+    elif 'ViT16_base_swag':
+        weight_v = 'base_swag'
+    model = ViTMultiLabel(num_labels, weight_v=weight_v).to(device) 
 
 
 criterion = nn.BCEWithLogitsLoss()
