@@ -290,3 +290,83 @@ def read_CXP(root_dir, label_list=None, test_ds_only=False, split_dir=None):
         test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
         test_ds = test_ds.cast_column("image", Image(mode="RGB"))
         return test_ds, class_labels
+
+
+
+def read_CXP_original(root_dir, label_list=None, test_ds_only=False, split_dir=None):
+    
+    if test_ds_only:
+        assert label_list is not None
+
+    # # load train_val and test (filenames) sets
+    assert split_dir != None # for CXP, we randomly split the data, as their original testset is human-annotated.
+
+    train_df = pd.read_csv(split_dir + 'train_cheXbert.csv')
+    val_df = pd.read_csv(split_dir + 'val_labels.csv')
+    test_df = pd.read_csv(split_dir + 'test_labels.csv')
+    print("The number of images in train, val, and test set are %d, %d, and %d" % (len(train_df), len(val_df), len(test_df)))
+    
+    if label_list is None:
+        label_list = [ 'No Finding', 'Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity', 'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis', 'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices']
+
+    # Create a ClassLabel feature for each unique label
+    class_labels = ClassLabel(names=label_list)
+    # Define the label feature as a sequence of ClassLabel
+    labels_type = Sequence(class_labels)
+    num_labels = len(class_labels.names)
+
+    label_values = train_df.loc[:, label_list].values
+    label_values = np.where(label_values > 0, 1.0, 0.0) # positive (1), negative (0), uncertain (-1), and unmentioned (blank) classes; we set 1 to 1, others to 0
+    train_df['labels'] = [x for x in label_values]
+    
+    # check do we need this for val and test?
+    label_values = val_df[label_list].values
+    label_values = np.where(label_values > 0, 1.0, 0.0)
+    val_df['labels'] = [x for x in label_values]
+
+    label_values = test_df[label_list].values
+    label_values = np.where(label_values > 0, 1.0, 0.0)
+    test_df['labels'] = [x for x in label_values]
+
+    train_df.rename(columns={'Path':'image'}, inplace=True)
+    test_df.rename(columns={'Path':'image'}, inplace=True)
+    val_df.rename(columns={'Path':'image'}, inplace=True)
+
+    # only get the following info: Path,Sex,Age
+    print(val_df.columns, test_df.columns)
+    train_df = train_df[['image', 'labels']]
+    val_df = val_df[['image', 'labels']]
+    test_df = test_df[['image', 'labels']]
+
+    # from df to dict
+    def df_to_dict(df, keys=['image', 'labels']):
+        data_dict = {}
+        for k in keys:
+            data_dict[k] = list(df[k].values)
+        return data_dict
+
+    # rename image path to the correct local path
+    train_df['image'] = train_df['image'].map(lambda x: x.replace("CheXpert-v1.0/train/", root_dir))
+    val_df['image'] = val_df['image'].map(lambda x: x.replace("CheXpert-v1.0/valid/", root_dir))
+    test_df['image'] = test_df['image'].map(lambda x: x.replace("test/", root_dir))
+
+    # load images
+    if not test_ds_only:
+        train_ds = Dataset.from_dict(df_to_dict(train_df), split='train')
+        val_ds = Dataset.from_dict(df_to_dict(val_df), split='val')
+        test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+
+        train_ds = train_ds.cast_column("image", Image(mode="RGB"))
+        val_ds = val_ds.cast_column("image", Image(mode="RGB"))
+        test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+
+        print(train_ds[0])
+        print(val_ds[0])
+        print(test_ds[0])
+        return train_ds, val_ds, test_ds, class_labels
+
+    else:
+        print("Only load test sets:", len(test_df))
+        test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+        test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+        return test_ds, class_labels

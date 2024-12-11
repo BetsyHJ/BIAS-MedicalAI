@@ -25,7 +25,7 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
-from util.data import read_dataset_from_folder, read_NIH_large, read_CXP
+from util.data import read_dataset_from_folder, read_NIH_large, read_CXP, read_CXP_original
 from util.data import collate_fn
 from evaluator import draw_roc_auc_curves
 
@@ -39,7 +39,7 @@ elif torch.backends.mps.is_available():
 print("We are using device:", device)
 
 data_name = 'CXP' # 'NIH' or 'CXP'
-ModelType = 'ViT'  # select 'ResNet50','densenet', 'ViT'
+ModelType = 'densenet'  # select 'ResNet50','densenet', 'ViT'
 
 ## Load data
 if data_name == 'NIH':
@@ -57,12 +57,15 @@ if data_name == 'NIH':
     test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
-    split_dir = './CXP/split_random/'
-    path = './tune-%s-on-CXP-train-shuffle-lr1e-05_randomsplit/' % (ModelType)
+    split_dir = './CXP/original_split/' # './CXP/split_random/'=8:1:1 or './CXP/original_split/'
+    path = './tune-%s-on-CXP-train-shuffle-lr1e-04_rot20_randomsplit/' % (ModelType)
     label_list = list(np.loadtxt(path + 'label_list.txt', delimiter='\t', dtype='str'))
     print("Loading checkpoint from:", path, flush=True)
     print("label list:", label_list, flush=True)
-    test_ds, class_labels = read_CXP(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
+    if 'original' in split_dir:
+        test_ds, class_labels = read_CXP_original(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
+    else:
+        test_ds, class_labels = read_CXP(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
 
 num_labels = len(class_labels.names)
 
@@ -136,6 +139,22 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
                'roc_auc_micro': roc_auc_micro,
                'roc_auc_macro': roc_auc_macro,
                'accuracy': accuracy}
+    
+    # for each label, get the metrics
+    roc_auc_each = {}
+    for i, each_class in enumerate(class_labels.names):
+        roc_auc_each[each_class] = roc_auc_score(y_true[:, i], probs[:, i])
+
+    if data_name == 'CXP':
+        selected_class = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Pleural Effusion'] # the competition evaluation setup
+        s = ",".join(['%.4f' % roc_auc_each[x] for x in selected_class])
+        s += ",%.4f" % (sum([roc_auc_each[x] for x in selected_class]) * 1.0 / len(selected_class))
+        print(",".join(selected_class) + ',mean', '\n', s)
+    all_class_ranked = sorted(class_labels.names)
+    s = ",".join(['%.4f' % roc_auc_each[x] for x in all_class_ranked])
+    s += ",%.4f" % (sum(roc_auc_each.values()) * 1.0 / len(all_class_ranked))
+    print(",".join(all_class_ranked) + ',mean', '\n', s)
+        
     if verbose:
         print(classification_report(y_true=y_true.astype(int), y_pred=y_pred, target_names=class_labels.names))
         print(metrics)
@@ -156,10 +175,10 @@ def evaluate(test_dataloader, threshold=0.5, verbose=1, draw_curve=True):
 
 print("------------------ Starting to evaluate -----------------")
 print(datetime.now())
-
 test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=256)
-evaluate(test_dataloader, threshold=thresholds)
 
+evaluate(test_dataloader, threshold=thresholds)
 print(datetime.now())
+
 print("When thresholds are all 0.5 ---")
 evaluate(test_dataloader, threshold=0.5, draw_curve=False)

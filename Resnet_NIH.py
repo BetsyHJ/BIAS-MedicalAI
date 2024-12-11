@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 from datasets import load_dataset, Image
 import numpy as np
@@ -34,7 +34,7 @@ import warnings
 warnings.filterwarnings("ignore")  # TODO: check
 
 ## self-defined functions and classes
-from util.data import read_dataset_from_folder, read_NIH_large, read_CXP
+from util.data import read_dataset_from_folder, read_NIH_large, read_CXP, read_CXP_original
 from util.data import collate_fn
 from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
@@ -42,7 +42,7 @@ from mymodel.vision_transformer import ViTMultiLabel
 
 print(datetime.now())
 
-ModelType = 'ViT16_base_swag'  # select 'ResNet50','densenet', 'ViT16_base' or 'ViT', 'ViT16_base_swag'
+ModelType = 'densenet'  # select 'ResNet50','densenet', 'ViT16_base' or 'ViT', 'ViT16_base_swag'
 
 normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
@@ -51,7 +51,7 @@ img_size = 256 if 'ViT' not in ModelType else 224
 _train_transforms = Compose(
         [
             RandomHorizontalFlip(),
-            RandomRotation(10),
+            RandomRotation(20),
             Resize(img_size),
             CenterCrop(img_size),
             ToTensor(),
@@ -80,23 +80,22 @@ if data_name == 'NIH':
     train_val_ds, test_ds, class_labels = read_NIH_large(root_dir, split_dir=split_dir)
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
-    split_dir = './CXP/split_random/'
-    print(datetime.now(), " ---------- starting to load data ----------")
-    train_val_ds, test_ds, class_labels = read_CXP(root_dir, split_dir=split_dir)
+    split_dir = './CXP/original_split/' # './CXP/split_random/'=8:1:1 or './CXP/original_split/'
+    print(datetime.now(), " ---------- starting to load data from %s ----------" % split_dir)
+    if 'original' in split_dir:
+        train_ds, val_ds, test_ds, class_labels = read_CXP_original(root_dir, split_dir=split_dir)
+    else:
+        train_val_ds, test_ds, class_labels = read_CXP(root_dir, split_dir=split_dir)
     print(datetime.now(), " ---------- load data done ----------")
 
-EPOCHS = 20
-LR = 1e-5 # 1e-4 # 5e-5
+EPOCHS = 10
+LR = 1e-4 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
-ratio = 0.125
-if split_dir: # make sure ratio of train/val/test split is 8:1:1
-    ratio = 0.111
-print("Setting %.2f of training set as validation, default ratio is 0.25" % ratio, flush=True)
 
 # path = './tune-ResNet50-on-NIH'
 # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
-path = './tune-%s-on-%s-train-shuffle-lr%.e' % (ModelType, data_name, LR)
+path = './tune-%s-on-%s-train-shuffle-lr%.e_rot20' % (ModelType, data_name, LR)
 if split_dir:
     path += '_randomsplit/'
 else:
@@ -106,10 +105,16 @@ print("Checkpoints stored in: ", path)
 if not os.path.exists(path):
     os.makedirs(path)
 
-# # train-valid split, value 0.25 for ratio: 6:2:2, value 0.125 for 7:1:2
-train_val_ds_ = train_val_ds.train_test_split(test_size=ratio, seed=42)
-val_ds = train_val_ds_['test']
-train_ds = train_val_ds_['train']
+if not ((data_name == 'CXP') and ('original' in split_dir)):
+    ratio = 0.125
+    if split_dir: # make sure ratio of train/val/test split is 8:1:1
+        ratio = 0.111
+    print("Setting %.2f of training set as validation, default ratio is 0.25" % ratio, flush=True)
+
+    # # train-valid split, value 0.25 for ratio: 6:2:2, value 0.125 for 7:1:2
+    train_val_ds_ = train_val_ds.train_test_split(test_size=ratio, seed=42)
+    val_ds = train_val_ds_['test']
+    train_ds = train_val_ds_['train']
 
 # %% [markdown]
 # ### Preprocessing the data
