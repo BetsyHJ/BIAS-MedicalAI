@@ -1,9 +1,19 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
-from datasets import load_dataset, Image
+from datasets import load_dataset
+from PIL import Image, ImageDraw
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
 import numpy as np
 from datasets.features import ClassLabel, Sequence
+
+from datasets import disable_progress_bar
+disable_progress_bar()
+from datasets import concatenate_datasets
+
 from torchvision.transforms import (CenterCrop, 
                                     Compose, 
                                     Normalize, 
@@ -39,6 +49,7 @@ from util.data import collate_fn
 from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
+from mymodel.differentiable_grad_cam import DifferentiableGradCAM, soft_iou_loss
 
 print(datetime.now())
 
@@ -88,15 +99,79 @@ elif data_name == 'CXP':
     else:
         train_val_ds, test_ds, class_labels = read_CXP(root_dir, split_dir=split_dir)
     print(datetime.now(), " ---------- load data done ----------")
+num_labels = len(class_labels.names)
+
+# # masking the other area out of the bbox in images and add them to the original training set
+bbox_info = np.loadtxt("./NIH-large/BBox_List_2017.csv", dtype=str, skiprows=1, delimiter=',') # # Image Index,Finding Label,Bbox [x,y,w,h],,,
+print("----------------- Load trainset for BBox List only ------------------")
+bbox_train_split = np.loadtxt('./NIH-large/BBox_List_train_split.csv', dtype=str)
+bbox_info = bbox_info[np.where(bbox_train_split == 'True', True, False)]
+print("----------------- Load %d trainset done ---------------" % len(bbox_info))
+
+bbox_dict = {}
+duplications = 0
+for i in range(len(bbox_info)):
+    v = bbox_info[i]
+    if v[1] == "Infiltrate":
+        v[1] = "Infiltration"
+    if v[0] not in bbox_dict:
+        bbox_dict[v[0]] = [[v[1], [int(float(x)) for x in v[2:6]]]]
+    else:
+        bbox_dict[v[0]].append([v[1], [int(float(x)) for x in v[2:6]]])
+        duplications += 1
+bbox_image_index = bbox_dict.keys()
+name_to_index = {name: i for i, name in enumerate(train_val_ds["Image Index"])}
+subset_indices = [name_to_index[name] for name in bbox_image_index if name in name_to_index]
+subset = train_val_ds.select(subset_indices)
+# # some bbox images are in testset 
+name_to_index = {name: i for i, name in enumerate(test_ds["Image Index"])}
+subset_indices = [name_to_index[name] for name in bbox_image_index if name in name_to_index]
+subset2 = test_ds.select(subset_indices)
+trainset_w_bbox = concatenate_datasets([subset, subset2])
+
+# # add BBox info to those images
+class_label2idx = dict(zip(class_labels.names, np.arange(len(class_labels.names))))
+def expand_annotations(example_batch):
+    new_batch = {k: [] for k in example_batch.keys()}
+    new_batch["BBox"] = []
+    new_batch["target_class"] = []
+    
+    for i, img_idx in enumerate(example_batch["Image Index"]):
+        for class_, bbox in bbox_dict[img_idx]:  
+            for k in example_batch.keys():
+                new_batch[k].append(example_batch[k][i])
+            new_batch["BBox"].append(bbox)
+            new_batch["target_class"].append(class_label2idx[class_])  # int
+    return new_batch
+trainset_w_bbox = trainset_w_bbox.map(expand_annotations, batched=True, num_proc=4)
+print(trainset_w_bbox)
+
+# # create bbox mask_dict
+def create_bbox_mask_dict(trainset_w_bbox):
+    bbox_dict = {}
+    for example in trainset_w_bbox:
+        image_id = example["Image Index"]
+        x, y, w, h = example["BBox"]
+        size = example["image"].size
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle([x, y, x + w, y + h], fill=1)
+        # Convert to tensor of shape [H, W] with dtype float32
+        mask_tensor = torch.tensor(np.array(mask), dtype=torch.float32)
+        bbox_dict[image_id] = [mask_tensor, example["target_class"]] # TODO: check to(device) usage to ensure they are in the same device
+    return bbox_dict
+bbox_mask_dict = create_bbox_mask_dict(trainset_w_bbox)
+
+# # start training
 
 EPOCHS = 10
-LR = 1e-5 # 1e-4 # 5e-5
+LR = 1e-4 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
 
 # path = './tune-ResNet50-on-NIH'
 # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
-path = './checkpoints/tune-%s-on-%s-train-shuffle-lr%.e_rot20' % (ModelType, data_name, LR)
+path = './checkpoints/tune-%s-on-%s-train-w_mask_blend_gau_noise-shuffle-lr%.e_rot20' % (ModelType, data_name, LR)
 if split_dir:
     if (data_name == 'CXP') and ('original' in split_dir):
         path += '_original/'
@@ -119,6 +194,32 @@ if not ((data_name == 'CXP') and ('original' in split_dir)):
     train_val_ds_ = train_val_ds.train_test_split(test_size=ratio, seed=42)
     val_ds = train_val_ds_['test']
     train_ds = train_val_ds_['train']
+
+def add_bbox_info_batch(examples):
+    updated_masks = []
+    has_bbox_flags = []
+    updated_targets = []
+    for image_id, image in zip(examples["Image Index"], examples["image"]):
+        width, height = image.size
+        if image_id in bbox_mask_dict:
+            v = bbox_mask_dict[image_id]
+            mask_tensor = v[0]  # [H, W], float32
+            updated_target = v[1]
+            has_bbox = True
+        else:
+            mask_tensor = torch.zeros((height, width), dtype=torch.float32)
+            updated_target = 0
+            has_bbox = False
+        updated_masks.append(mask_tensor)
+        has_bbox_flags.append(has_bbox)
+        updated_targets.append(updated_target)
+    examples["bbox_mask"] = updated_masks
+    examples["has_bbox"] = has_bbox_flags
+    examples["mask_target"] = updated_targets
+    return examples
+train_ds = train_ds.map(add_bbox_info_batch, batched=True)
+print("Added bbox info to train_ds", datetime.now(), flush=True)
+exit(0)
 
 # %% [markdown]
 # ### Preprocessing the data
@@ -170,7 +271,6 @@ val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size
 # %%
 
 # Instantiate the model
-num_labels = len(class_labels.names)
 if ModelType == 'ResNet50':
     model = ResNetMultiLabel(num_labels).to(device)
 elif ModelType == 'densenet':
@@ -183,6 +283,10 @@ elif 'ViT' in ModelType:
 
 
 criterion = nn.BCEWithLogitsLoss()
+
+# Initialize for cam_loss
+layer_ = model.resnet.layer4[-1]
+cam_extractor = DifferentiableGradCAM(model, layer_)
 
 
 def train_one_epoch(epoch_index, tb_writer):
@@ -231,10 +335,17 @@ for epoch in range(EPOCHS):
     # statistics for batch normalization.
     model.eval()
 
+    examples["mask_target"] = updated_targets
+
+    print("starting training:", datetime.now(), flush=True)
     # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
         for i, vdata in enumerate(val_dataloader):
             vinputs, vlabels = vdata['pixel_values'], vdata['labels']
+            vmasks, vhas_bbox = vdata["bbox_mask"], vdata["has_bbox"]
+            vmask_targets = vdata["mask_target"]
+            print(vdata["Image Index"], flush=True)
+            # classification loss
             voutputs = model(vinputs)
             vloss = criterion(voutputs, vlabels)
             vprobs = torch.sigmoid(voutputs).cpu().numpy()
@@ -243,6 +354,14 @@ for epoch in range(EPOCHS):
             roc_auc += roc_auc_score(vlabels.cpu().numpy(), vprobs, average = 'micro')
             f1 += f1_score(vlabels.cpu().numpy(), y_preds, average = 'micro')
             running_vloss += vloss
+            # TODO: grad-cam matching loss 
+            if vhas_bbox.any():
+                cams = cam_extractor(vinput, vmask_targets) # cam: [B, H, W]
+                loss_cam = soft_iou_loss(cam[vhas_bbox], vmasks[vhas_bbox])
+            else:
+                loss_cam = torch.tensor(0.0, device=device)
+            exit(0)
+
 
     avg_vloss = running_vloss / (i + 1)
     print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)

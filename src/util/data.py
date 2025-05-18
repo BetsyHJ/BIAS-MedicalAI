@@ -28,6 +28,7 @@ def collate_fn(examples):
     labels = torch.tensor([example["labels"] for example in examples]).to(device) # change for one-hot multilabels
     return {"pixel_values": pixel_values, "labels": labels}
 
+
 def read_dataset_from_folder(root_dir, label_list=None):
 
     # root_dir = './NIH-small/sample/'
@@ -319,7 +320,7 @@ def read_CXP_original(root_dir, label_list=None, test_ds_only=False, split_dir=N
     label_values = np.where(label_values > 0, 1.0, 0.0) # positive (1), negative (0), uncertain (-1), and unmentioned (blank) classes; we set 1 to 1, others to 0
     train_df['labels'] = [x for x in label_values]
     
-    # check do we need this for val and test?
+    # do we need this for val and test: only 0.0 or 1.0 in val and test, it won't change anything if excuting the following code
     label_values = val_df[label_list].values
     label_values = np.where(label_values > 0, 1.0, 0.0)
     val_df['labels'] = [x for x in label_values]
@@ -334,14 +335,18 @@ def read_CXP_original(root_dir, label_list=None, test_ds_only=False, split_dir=N
 
     # only get the following info: Path,Sex,Age
     print(val_df.columns, test_df.columns)
-    train_df = train_df[['image', 'labels']]
-    val_df = val_df[['image', 'labels']]
-    test_df = test_df[['image', 'labels']]
+    # train_df = train_df[['image', 'labels']]
+    # val_df = val_df[['image', 'labels']]
+    # test_df = test_df[['image', 'labels']]
 
     # from df to dict
-    def df_to_dict(df, keys=['image', 'labels']):
+    def df_to_dict(df):
+        # keys=['image', 'labels']
+        keys = list(df.columns)
         data_dict = {}
         for k in keys:
+            if k not in ['image', 'labels', 'Sex', 'Age']:
+                continue
             data_dict[k] = list(df[k].values)
         return data_dict
 
@@ -370,3 +375,37 @@ def read_CXP_original(root_dir, label_list=None, test_ds_only=False, split_dir=N
         test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
         test_ds = test_ds.cast_column("image", Image(mode="RGB"))
         return test_ds, class_labels
+
+
+def read_CXP_original_val_gender(root_dir, label_list=None, split_dir=None):
+    val_df = pd.read_csv(split_dir + 'val_labels.csv')    
+    if label_list is None:
+        label_list = [ 'No Finding', 'Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity', 'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis', 'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture', 'Support Devices']
+
+    # Create a ClassLabel feature for each unique label
+    class_labels = ClassLabel(names=label_list)
+    # Define the label feature as a sequence of ClassLabel
+    labels_type = Sequence(class_labels)
+    num_labels = len(class_labels.names)
+
+    label_values = val_df[label_list].values
+    label_values = np.where(label_values > 0, 1.0, 0.0)
+    val_df['labels'] = [x for x in label_values]
+
+    val_df.rename(columns={'Path':'image'}, inplace=True)
+
+    val_df = val_df[['image', 'labels', 'Sex', 'Age']]
+
+    # from df to dict
+    def df_to_dict(df, keys=['image', 'labels', 'Sex', 'Age']):
+        data_dict = {}
+        for k in keys:
+            data_dict[k] = list(df[k].values)
+        return data_dict
+
+    val_df['image'] = val_df['image'].map(lambda x: x.replace("CheXpert-v1.0/valid/", root_dir))
+    
+    # load images
+    val_ds = Dataset.from_dict(df_to_dict(val_df), split='val')
+    val_ds = val_ds.cast_column("image", Image(mode="RGB"))
+    return val_ds, class_labels

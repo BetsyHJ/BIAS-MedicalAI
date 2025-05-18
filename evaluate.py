@@ -25,7 +25,7 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
-from util.data import read_dataset_from_folder, read_NIH_large, read_CXP, read_CXP_original
+from util.data import read_dataset_from_folder, read_NIH_large, read_CXP, read_CXP_original, read_CXP_original_val_gender
 from util.data import collate_fn
 from evaluator import draw_roc_auc_curves
 
@@ -38,8 +38,8 @@ elif torch.backends.mps.is_available():
     device = 'mps'
 print("We are using device:", device)
 
-data_name = 'CXP' # 'NIH' or 'CXP'
-ModelType = 'densenet'  # select 'ResNet50','densenet', 'ViT'
+data_name = 'NIH' # 'NIH' or 'CXP'
+ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT'
 
 ## Load data
 if data_name == 'NIH':
@@ -49,16 +49,21 @@ if data_name == 'NIH':
     # path = './tune-ResNet-on-NIH/'
     # path = './tune-ResNet50-on-NIH/'
     # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
-    path = './tune-%s-on-NIH-train-shuffle' % ModelType
+    # path = './tune-%s-on-NIH-train-shuffle' % ModelType
+    # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend0.0-shuffle-lr1e-04_rot20' % (ModelType)
+    path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
     path += '_randomsplit/' if split_dir else '/'
 
     label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
+    print("Loading checkpoint from:", path, flush=True)
     print("label list:", label_list)
     test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
-    split_dir = './CXP/original_split/' # './CXP/split_random/'=8:1:1 or './CXP/original_split/'
-    path = './tune-%s-on-CXP-train-shuffle-lr1e-04_rot20_randomsplit/' % (ModelType)
+    split_dir = './CXP/split_random/' # './CXP/split_random/'=8:1:1 or './CXP/original_split/'
+    path = './tune-%s-on-CXP-train-shuffle-lr1e-05_rot20' % (ModelType)
+    path += '_original/' if 'original' in split_dir else '_randomsplit/'
+    
     label_list = list(np.loadtxt(path + 'label_list.txt', delimiter='\t', dtype='str'))
     print("Loading checkpoint from:", path, flush=True)
     print("label list:", label_list, flush=True)
@@ -143,6 +148,9 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
     # for each label, get the metrics
     roc_auc_each = {}
     for i, each_class in enumerate(class_labels.names):
+        if (sum(y_true[:, i]) == len(y_true[:, 1])) or (sum(y_true[:, i]) == 0.0):
+            print("check")
+            continue    
         roc_auc_each[each_class] = roc_auc_score(y_true[:, i], probs[:, i])
 
     if data_name == 'CXP':
@@ -150,7 +158,8 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
         s = ",".join(['%.4f' % roc_auc_each[x] for x in selected_class])
         s += ",%.4f" % (sum([roc_auc_each[x] for x in selected_class]) * 1.0 / len(selected_class))
         print(",".join(selected_class) + ',mean', '\n', s)
-    all_class_ranked = sorted(class_labels.names)
+    # all_class_ranked = sorted(class_labels.names)
+    all_class_ranked = sorted(roc_auc_each.keys())
     s = ",".join(['%.4f' % roc_auc_each[x] for x in all_class_ranked])
     s += ",%.4f" % (sum(roc_auc_each.values()) * 1.0 / len(all_class_ranked))
     print(",".join(all_class_ranked) + ',mean', '\n', s)
@@ -182,3 +191,22 @@ print(datetime.now())
 
 print("When thresholds are all 0.5 ---")
 evaluate(test_dataloader, threshold=0.5, draw_curve=False)
+
+# print("------------------ Evaluating bias and fairness -----------------")
+# print(datetime.now())
+# if (data_name == 'CXP') and ('original' in split_dir):
+#     val_ds, class_labels = read_CXP_original_val_gender(root_dir, label_list=label_list, split_dir=split_dir)
+#     test_ds = val_ds
+#     test_ds.set_transform(val_transforms)
+
+# test_ds_female = test_ds.filter(lambda example: example['Sex'] == 'Female')
+# test_ds_male = test_ds.filter(lambda example: example['Sex'] == 'Male')
+# print("The numbers of female and male in CXP-val: %d and %d" % (len(test_ds_female), len(test_ds_male)))
+
+# # %%
+# test_dataloader_female = DataLoader(test_ds_female, collate_fn=collate_fn, batch_size=32)
+# evaluate(test_dataloader_female, threshold=thresholds, draw_curve=False)
+
+# # %%
+# test_dataloader_male = DataLoader(test_ds_male, collate_fn=collate_fn, batch_size=32)
+# evaluate(test_dataloader_male, threshold=thresholds, draw_curve=False)
