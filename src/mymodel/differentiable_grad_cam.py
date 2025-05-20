@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 class DifferentiableGradCAM:
     def __init__(self, model, target_layer):
@@ -34,16 +35,19 @@ class DifferentiableGradCAM:
 
         # Weighted sum of feature maps: [B, H, W]
         cam = torch.relu((weights * self.feature_maps).sum(dim=1))  # shape: [B, H, W]
-        # print(cam.size())
-        # Normalize CAM
-        cam_min = torch.amin(cam, dim=(1, 2), keepdim=True)
-        cam_max = torch.amax(cam, dim=(1, 2), keepdim=True)
+        
+        # Upsampling using interpolate, following what pytorch_grad_cam do in their code
+        cam = F.interpolate(cam.unsqueeze(1), size=input_tensor.size()[-2:], mode='bilinear', align_corners=False)
+
+        # Normalize CAM, using (2, 3) rather than (1, 2) as I use upsequeeze in upsampling
+        cam_min = torch.amin(cam, dim=(2, 3), keepdim=True)
+        cam_max = torch.amax(cam, dim=(2, 3), keepdim=True)
         cam = (cam - cam_min) / (cam_max - cam_min + 1e-8)
 
-        # cam = cam - cam.min(dim=(1, 2), keepdim=True)[0]
-        # cam = cam / (cam.max(dim=(1, 2), keepdim=True)[0] + 1e-8)
+        # cam = cam - cam.amin(dim=(1, 2), keepdim=True)
+        # cam = cam / (cam.amax(dim=(1, 2), keepdim=True) + 1e-8)
 
-        return cam  # differentiable, usable in loss function
+        return cam.squeeze(1)  # differentiable, usable in loss function
 
 def soft_iou_loss(cam, mask, eps=1e-6):
     """
