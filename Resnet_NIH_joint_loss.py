@@ -13,6 +13,7 @@ from datasets.features import ClassLabel, Sequence
 from datasets import disable_progress_bar
 disable_progress_bar()
 from datasets import concatenate_datasets
+from datasets import Image as HFImage
 
 from torchvision.transforms import (CenterCrop, 
                                     Compose, 
@@ -23,12 +24,13 @@ from torchvision.transforms import (CenterCrop,
                                     Resize, 
                                     ToTensor)
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchvision.models as models
 from torchvision.models.feature_extraction import get_graph_node_names, create_feature_extractor
 
 from torch import nn
+import torch.nn.functional as F
+
 from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
 
 from torch.utils.tensorboard import SummaryWriter
@@ -50,6 +52,12 @@ from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
 from mymodel.differentiable_grad_cam import DifferentiableGradCAM, soft_iou_loss
+
+from disease_localization_metrics import bbox_to_mask
+# for check if the cam loss is correct
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+from disease_localization_metrics import bbox_to_mask, normalize_cam, compute_iou 
 
 print(datetime.now())
 
@@ -143,27 +151,23 @@ def expand_annotations(example_batch):
             new_batch["BBox"].append(bbox)
             new_batch["target_class"].append(class_label2idx[class_])  # int
     return new_batch
-trainset_w_bbox = trainset_w_bbox.map(expand_annotations, batched=True, num_proc=4)
-print(trainset_w_bbox)
 
-# # create bbox mask_dict
-def create_bbox_mask_dict(trainset_w_bbox):
-    bbox_dict = {}
-    for example in trainset_w_bbox:
-        image_id = example["Image Index"]
-        x, y, w, h = example["BBox"]
-        size = example["image"].size
-        mask = Image.new("L", size, 0)
-        draw = ImageDraw.Draw(mask)
-        draw.rectangle([x, y, x + w, y + h], fill=1)
-        # Convert to tensor of shape [H, W] with dtype float32
-        mask_tensor = torch.tensor(np.array(mask), dtype=torch.float32)
-        bbox_dict[image_id] = [mask_tensor, example["target_class"]] # TODO: check to(device) usage to ensure they are in the same device
-    return bbox_dict
-bbox_mask_dict = create_bbox_mask_dict(trainset_w_bbox)
+def create_mask_tensors(example_batch):
+    mask_tensors = []
+    for image, bbox in zip(example_batch["image"], example_batch["BBox"]):
+        # Create zeros mask
+        mask = bbox_to_mask(bbox, (8, 8), image.size) # heatmap size (8, 8) for resnet
+        # width, height = image.size
+        # x, y, w, h = bbox
+        # mask = torch.zeros((height, width), dtype=torch.float32)
+        # mask[y:y + h, x:x + w] = 1.0  # Fill the bbox with 1s
+        mask_tensors.append(mask)
+    return {"mask_tensor": mask_tensors}
+
+trainset_w_bbox = trainset_w_bbox.map(expand_annotations, batched=True, num_proc=4)
+trainset_w_bbox = trainset_w_bbox.map(create_mask_tensors, batched=True, num_proc=4)
 
 # # start training
-
 EPOCHS = 10
 LR = 1e-4 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
@@ -195,31 +199,47 @@ if not ((data_name == 'CXP') and ('original' in split_dir)):
     val_ds = train_val_ds_['test']
     train_ds = train_val_ds_['train']
 
-def add_bbox_info_batch(examples):
-    updated_masks = []
-    has_bbox_flags = []
-    updated_targets = []
-    for image_id, image in zip(examples["Image Index"], examples["image"]):
-        width, height = image.size
-        if image_id in bbox_mask_dict:
-            v = bbox_mask_dict[image_id]
-            mask_tensor = v[0]  # [H, W], float32
-            updated_target = v[1]
-            has_bbox = True
-        else:
-            mask_tensor = torch.zeros((height, width), dtype=torch.float32)
-            updated_target = 0
-            has_bbox = False
-        updated_masks.append(mask_tensor)
-        has_bbox_flags.append(has_bbox)
-        updated_targets.append(updated_target)
-    examples["bbox_mask"] = updated_masks
-    examples["has_bbox"] = has_bbox_flags
-    examples["mask_target"] = updated_targets
-    return examples
-train_ds = train_ds.map(add_bbox_info_batch, batched=True)
-print("Added bbox info to train_ds", datetime.now(), flush=True)
-exit(0)
+# # # create bbox mask_dict
+# def create_bbox_mask_dict(trainset_w_bbox):
+#     bbox_dict = {}
+#     for example in trainset_w_bbox:
+#         image_id = example["Image Index"]
+#         x, y, w, h = example["BBox"]
+#         size = example["image"].size
+#         mask = Image.new("L", size, 0)
+#         draw = ImageDraw.Draw(mask)
+#         draw.rectangle([x, y, x + w, y + h], fill=1)
+#         # Convert to tensor of shape [H, W] with dtype float32
+#         mask_tensor = torch.tensor(np.array(mask), dtype=torch.float32)
+#         bbox_dict[image_id] = [mask_tensor, example["target_class"]] # TODO: check to(device) usage to ensure they are in the same device
+#     return bbox_dict
+# bbox_mask_dict = create_bbox_mask_dict(trainset_w_bbox)
+
+# def add_bbox_info_batch(examples):
+#     updated_masks = []
+#     has_bbox_flags = []
+#     updated_targets = []
+#     for image_id, image in zip(examples["Image Index"], examples["image"]):
+#         width, height = image.size
+#         if image_id in bbox_mask_dict:
+#             v = bbox_mask_dict[image_id]
+#             mask_tensor = v[0]  # [H, W], float32
+#             updated_target = v[1]
+#             has_bbox = True
+#         else:
+#             mask_tensor = torch.zeros((height, width), dtype=torch.float32)
+#             updated_target = 0
+#             has_bbox = False
+#         updated_masks.append(mask_tensor)
+#         has_bbox_flags.append(has_bbox)
+#         updated_targets.append(updated_target)
+#     examples["bbox_mask"] = updated_masks
+#     examples["has_bbox"] = has_bbox_flags
+#     examples["mask_target"] = updated_targets
+#     return examples
+# train_ds = train_ds.map(add_bbox_info_batch, batched=True, num_proc=8)
+# print("Added bbox info to train_ds", datetime.now(), flush=True)
+# exit(0)
 
 # %% [markdown]
 # ### Preprocessing the data
@@ -243,6 +263,7 @@ def val_transforms(examples):
 train_ds.set_transform(train_transforms)
 val_ds.set_transform(val_transforms)
 test_ds.set_transform(val_transforms)
+trainset_w_bbox.set_transform(train_transforms)
 # %%
 
 device = 'cpu'
@@ -254,8 +275,25 @@ print("We are using device:", device, flush=True)
 
 batch_size = 16 # default: 16
 print("Using batch_size: %d, default: 16" % batch_size)
+
+def collate_fn_w_bbox(examples):
+    pixel_values = torch.stack([example["pixel_values"] for example in examples]).to(device)
+    mask_tensor = torch.tensor([example["mask_tensor"] for example in examples]).to(device)
+    labels = torch.tensor([example["target_class"] for example in examples]).to(device) # change for one-hot multilabels
+    images = [example["Image Index"] for example in examples]
+    return {"pixel_values": pixel_values, "target_class": labels, "mask_tensor": mask_tensor, "image": images}
+    # return {"pixel_values": pixel_values, "target_class": labels, "mask_tensor": mask_tensor}
+# print(trainset_w_bbox)
+# print(type(trainset_w_bbox["mask_tensor"][0]))
+# print(type(trainset_w_bbox["pixel_values"][0]))
+# exit(0)
+
 train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=batch_size, shuffle=True)
 val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size)
+
+train_w_bbox_dataloader = DataLoader(trainset_w_bbox, collate_fn=collate_fn_w_bbox, batch_size=20, shuffle=True)
+train_w_bbox_iter = iter(train_w_bbox_dataloader)  # iterator for bbox data
+
 
 # %%
 # batch = next(iter(train_dataloader))
@@ -288,16 +326,43 @@ criterion = nn.BCEWithLogitsLoss()
 layer_ = model.resnet.layer4[-1]
 cam_extractor = DifferentiableGradCAM(model, layer_)
 
+# Using the GradCAM from pythorch_grad_cam instead
+cam_for_check = GradCAM(model=model, target_layers=[layer_])
 
 def train_one_epoch(epoch_index, tb_writer):
     running_loss = 0.0
     last_loss = 0.
     for i, data in enumerate(train_dataloader):
-        inputs, labels = data['pixel_values'], data['labels']
-        optimizer.zero_grad()
-        outputs = model(inputs)
+        # inputs, labels = data['pixel_values'], data['labels']
+        # optimizer.zero_grad()
+        # outputs = model(inputs)
+        # # classification loss
+        # loss = criterion(outputs, labels)
 
-        loss = criterion(outputs, labels)
+        # # TODO: grad-cam matching loss 
+        # Try to get bbox batch
+        try:
+            bbox_batch = next(train_w_bbox_iter)
+        except StopIteration:
+            bbox_iter = iter(train_w_bbox_dataloader)
+            bbox_batch = next(train_w_bbox_iter)
+        bbox_input, bbox_labels, bbox_masks = bbox_batch["pixel_values"], bbox_batch["target_class"], bbox_batch["mask_tensor"]
+        cams = cam_extractor(bbox_input, bbox_labels)
+        loss_cam = soft_iou_loss(cams, bbox_masks)
+        print(bbox_batch["image"])
+        print(loss_cam.size())
+        print(loss_cam)
+        print(loss_cam.mean().item())
+        grayscale_cam = cam_for_check(input_tensor=bbox_input, targets=[ClassifierOutputTarget(x) for x in bbox_labels.cpu().numpy()])
+        print(np.array(grayscale_cam).size)
+        # upsampling to match GradCAM package
+        upsampled_mask = F.interpolate(bbox_masks.float().unsqueeze(1), size=(256, 256), mode='bilinear', align_corners=False)
+        for k in range(8):
+            normalize_heatmap = normalize_cam(grayscale_cam[k])
+            iou = compute_iou(normalize_heatmap, bbox_masks.cpu().numpy(), threshold=0.3)
+            print(iou)
+        exit(0)
+        
         loss.backward()
         optimizer.step()
 
@@ -354,13 +419,6 @@ for epoch in range(EPOCHS):
             roc_auc += roc_auc_score(vlabels.cpu().numpy(), vprobs, average = 'micro')
             f1 += f1_score(vlabels.cpu().numpy(), y_preds, average = 'micro')
             running_vloss += vloss
-            # TODO: grad-cam matching loss 
-            if vhas_bbox.any():
-                cams = cam_extractor(vinput, vmask_targets) # cam: [B, H, W]
-                loss_cam = soft_iou_loss(cam[vhas_bbox], vmasks[vhas_bbox])
-            else:
-                loss_cam = torch.tensor(0.0, device=device)
-            exit(0)
 
 
     avg_vloss = running_vloss / (i + 1)
