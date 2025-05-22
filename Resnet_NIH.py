@@ -40,6 +40,9 @@ from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
 
+# # setup for wandb
+import wandb
+
 print(datetime.now())
 
 ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT16_base' or 'ViT', 'ViT16_base_swag'
@@ -96,7 +99,7 @@ print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
 # path = './tune-ResNet50-on-NIH'
 # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
-path = './checkpoints/tune-%s-on-%s-train-shuffle-lr%.e_rot20' % (ModelType, data_name, LR)
+path = './checkpoints/tune-%s-on-%s-train-shuffle-lr%.e_rot20_run2' % (ModelType, data_name, LR)
 if split_dir:
     if (data_name == 'CXP') and ('original' in split_dir):
         path += '_original/'
@@ -184,6 +187,17 @@ elif 'ViT' in ModelType:
 
 criterion = nn.BCEWithLogitsLoss()
 
+wandb.init(
+    project="SpuriousCorrelation",     # This will create or use an existing project
+    # name="experiment-name",          # Optional: a name for this specific run
+    config={
+        "epochs": EPOCHS,
+        "batch_size": batch_size,
+        "learning_rate": LR,
+        "checkpoint_save_to": path,
+        # Add other hyperparameters if desired
+    }
+)
 
 def train_one_epoch(epoch_index, tb_writer):
     running_loss = 0.0
@@ -199,6 +213,15 @@ def train_one_epoch(epoch_index, tb_writer):
 
         # Gather data and report
         running_loss += loss.item()
+
+        # wandb logging per batch
+        wandb.log({
+            'loss/onlycls': loss.item(),
+            'epoch': epoch_index,
+            'step': epoch_index * len(train_dataloader) + i,
+            'lambda': 0.0,
+        })
+
         # pbar.set_description('  batch {} loss: {}'.format(i + 1, loss.item()))
         if i % 10 == 9:
             last_loss = running_loss / 10 # loss per batch
@@ -246,6 +269,14 @@ for epoch in range(EPOCHS):
 
     avg_vloss = running_vloss / (i + 1)
     print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)
+    
+    wandb.log({
+        "loss/train": avg_loss,
+        "loss/val": avg_vloss,
+        "val/roc_auc": roc_auc / (i+1),
+        "val/f1": f1 / (i+1),
+        "epoch": epoch
+    })
 
     # Log the running loss averaged per batch
     # for both training and validation

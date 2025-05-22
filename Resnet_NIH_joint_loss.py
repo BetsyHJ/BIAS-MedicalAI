@@ -59,6 +59,9 @@ from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from disease_localization_metrics import bbox_to_mask, normalize_cam, compute_iou 
 
+# # setup for wandb
+import wandb
+
 print(datetime.now())
 
 ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT16_base' or 'ViT', 'ViT16_base_swag'
@@ -156,7 +159,7 @@ def create_mask_tensors(example_batch):
     mask_tensors = []
     for image, bbox in zip(example_batch["image"], example_batch["BBox"]):
         # Create zeros mask
-        mask = bbox_to_mask(bbox, (8, 8), image.size) # heatmap size (8, 8) for resnet
+        mask = bbox_to_mask(bbox, (img_size, img_size), image.size) # heatmap size (256, 256) for resnet, as the heatmap do upsampling to img_size
         # width, height = image.size
         # x, y, w, h = bbox
         # mask = torch.zeros((height, width), dtype=torch.float32)
@@ -172,10 +175,10 @@ EPOCHS = 10
 LR = 1e-4 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
-
 # path = './tune-ResNet50-on-NIH'
 # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
-path = './checkpoints/tune-%s-on-%s-train-w_mask_blend_gau_noise-shuffle-lr%.e_rot20' % (ModelType, data_name, LR)
+lambda_cam = 0.1
+path = './checkpoints/tune-%s-on-%s-train-w_joint_%.e-shuffle-lr%.e_rot20' % (ModelType, data_name, lambda_cam, LR)
 if split_dir:
     if (data_name == 'CXP') and ('original' in split_dir):
         path += '_original/'
@@ -184,6 +187,7 @@ if split_dir:
 else:
     path += '/'
 print("Checkpoints stored in: ", path)
+np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
 if not os.path.exists(path):
     os.makedirs(path)
@@ -273,35 +277,22 @@ elif torch.backends.mps.is_available():
     device = 'mps'
 print("We are using device:", device, flush=True)
 
-batch_size = 16 # default: 16
+batch_size, batch_size_bbox = 32, 8 # default: 16
 print("Using batch_size: %d, default: 16" % batch_size)
 
 def collate_fn_w_bbox(examples):
     pixel_values = torch.stack([example["pixel_values"] for example in examples]).to(device)
     mask_tensor = torch.tensor([example["mask_tensor"] for example in examples]).to(device)
     labels = torch.tensor([example["target_class"] for example in examples]).to(device) # change for one-hot multilabels
-    images = [example["Image Index"] for example in examples]
-    return {"pixel_values": pixel_values, "target_class": labels, "mask_tensor": mask_tensor, "image": images}
-    # return {"pixel_values": pixel_values, "target_class": labels, "mask_tensor": mask_tensor}
-# print(trainset_w_bbox)
-# print(type(trainset_w_bbox["mask_tensor"][0]))
-# print(type(trainset_w_bbox["pixel_values"][0]))
-# exit(0)
+    # images = [example["Image Index"] for example in examples]
+    # return {"pixel_values": pixel_values, "target_class": labels, "mask_tensor": mask_tensor, "image": images}
+    return {"pixel_values": pixel_values, "target_class": labels, "mask_tensor": mask_tensor}
 
 train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=batch_size, shuffle=True)
 val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size)
 
-train_w_bbox_dataloader = DataLoader(trainset_w_bbox, collate_fn=collate_fn_w_bbox, batch_size=20, shuffle=True)
+train_w_bbox_dataloader = DataLoader(trainset_w_bbox, collate_fn=collate_fn_w_bbox, batch_size=batch_size_bbox, shuffle=True)
 train_w_bbox_iter = iter(train_w_bbox_dataloader)  # iterator for bbox data
-
-
-# %%
-# batch = next(iter(train_dataloader))
-# for k,v in batch.items():
-#   if isinstance(v, torch.Tensor):
-#     print(k, v.shape)
-#     if k == 'labels':
-#       print(v)
 
 # %% [markdown]
 # ### Define the model
@@ -322,64 +313,80 @@ elif 'ViT' in ModelType:
 
 criterion = nn.BCEWithLogitsLoss()
 
-# Initialize for cam_loss
-layer_ = model.resnet.layer4[-1]
-cam_extractor = DifferentiableGradCAM(model, layer_)
+wandb.init(
+    project="SpuriousCorrelation",     # This will create or use an existing project
+    name="joint_loss_%.e" % lambda_cam,        # Optional: a name for this specific run
+    config={
+        "epochs": EPOCHS,
+        "batch_size": batch_size,
+        "batch_size_bbox": batch_size_bbox,
+        "learning_rate": LR,
+        "checkpoint_save_to": path,
+        # Add other hyperparameters if desired
+    }
+)
 
-# Using the GradCAM from pythorch_grad_cam instead
-cam_for_check = GradCAM(model=model, target_layers=[layer_])
 
-def train_one_epoch(epoch_index, tb_writer):
+# # Using the GradCAM from pythorch_grad_cam instead
+# cam_for_check = GradCAM(model=model, target_layers=[layer_])
+
+def train_one_epoch(epoch_index, tb_writer=None):
+    bbox_batch_iter = train_w_bbox_iter
     running_loss = 0.0
     last_loss = 0.
     for i, data in enumerate(train_dataloader):
-        # inputs, labels = data['pixel_values'], data['labels']
-        # optimizer.zero_grad()
-        # outputs = model(inputs)
-        # # classification loss
-        # loss = criterion(outputs, labels)
+        inputs, labels = data['pixel_values'], data['labels']
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        # classification loss
+        loss_cls = criterion(outputs, labels)
 
-        # # TODO: grad-cam matching loss 
-        # Try to get bbox batch
+        # Initialize for cam_loss
+        layer_ = model.resnet.layer4[-1]
+        cam_extractor = DifferentiableGradCAM(model, layer_)
+
+        # # grad-cam matching loss 
         try:
-            bbox_batch = next(train_w_bbox_iter)
+            bbox_batch = next(bbox_batch_iter)
         except StopIteration:
-            bbox_iter = iter(train_w_bbox_dataloader)
-            bbox_batch = next(train_w_bbox_iter)
+            bbox_batch_iter = iter(train_w_bbox_dataloader)
+            bbox_batch = next(bbox_batch_iter)
         bbox_input, bbox_labels, bbox_masks = bbox_batch["pixel_values"], bbox_batch["target_class"], bbox_batch["mask_tensor"]
+        # print(bbox_input.size(), bbox_labels.size())
         cams = cam_extractor(bbox_input, bbox_labels)
         loss_cam = soft_iou_loss(cams, bbox_masks)
-        print(bbox_batch["image"])
-        print(loss_cam.size())
-        print(loss_cam)
-        print(loss_cam.mean().item())
-        grayscale_cam = cam_for_check(input_tensor=bbox_input, targets=[ClassifierOutputTarget(x) for x in bbox_labels.cpu().numpy()])
-        print(np.array(grayscale_cam).size)
-        # upsampling to match GradCAM package
-        upsampled_mask = F.interpolate(bbox_masks.float().unsqueeze(1), size=(256, 256), mode='bilinear', align_corners=False)
-        for k in range(8):
-            normalize_heatmap = normalize_cam(grayscale_cam[k])
-            iou = compute_iou(normalize_heatmap, bbox_masks.cpu().numpy(), threshold=0.3)
-            print(iou)
-        exit(0)
+
+        loss = loss_cls + lambda_cam * loss_cam.mean()
         
         loss.backward()
         optimizer.step()
 
         # Gather data and report
         running_loss += loss.item()
+
+        # wandb logging per batch
+        wandb.log({
+            'loss/total': loss.item(),
+            'loss/classification': loss_cls.item(),
+            'loss/cam_alignment': loss_cam.mean().item(),
+            'epoch': epoch_index,
+            'step': epoch_index * len(train_dataloader) + i,
+            'lambda': lambda_cam,
+        })
+
         # pbar.set_description('  batch {} loss: {}'.format(i + 1, loss.item()))
         if i % 10 == 9:
             last_loss = running_loss / 10 # loss per batch
             # pbar.set_description('  batch {} loss: {}'.format(i + 1, last_loss))
-            tb_x = epoch_index * len(train_dataloader) + i + 1
-            tb_writer.add_scalar('Loss/train', last_loss, tb_x)
+            # tb_x = epoch_index * len(train_dataloader) + i + 1
+            # tb_writer.add_scalar('Loss/train', last_loss, tb_x)
             running_loss = 0.
 
     return last_loss
 
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-writer = SummaryWriter('logs/fashion_trainer_{}'.format(timestamp))
+# writer = SummaryWriter('logs/fashion_trainer_{}'.format(timestamp))
+writer = None
 
 
 best_epoch = -1
@@ -400,16 +407,11 @@ for epoch in range(EPOCHS):
     # statistics for batch normalization.
     model.eval()
 
-    examples["mask_target"] = updated_targets
-
     print("starting training:", datetime.now(), flush=True)
     # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
         for i, vdata in enumerate(val_dataloader):
             vinputs, vlabels = vdata['pixel_values'], vdata['labels']
-            vmasks, vhas_bbox = vdata["bbox_mask"], vdata["has_bbox"]
-            vmask_targets = vdata["mask_target"]
-            print(vdata["Image Index"], flush=True)
             # classification loss
             voutputs = model(vinputs)
             vloss = criterion(voutputs, vlabels)
@@ -424,12 +426,20 @@ for epoch in range(EPOCHS):
     avg_vloss = running_vloss / (i + 1)
     print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)
 
-    # Log the running loss averaged per batch
-    # for both training and validation
-    writer.add_scalars('Training vs. Validation Loss',
-                    { 'Training' : avg_loss, 'Validation' : avg_vloss },
-                    epoch + 1)
-    writer.flush()
+    wandb.log({
+        "loss/train": avg_loss,
+        "loss/val": avg_vloss,
+        "val/roc_auc": roc_auc / (i+1),
+        "val/f1": f1 / (i+1),
+        "epoch": epoch
+    })
+
+    # # Log the running loss averaged per batch
+    # # for both training and validation
+    # writer.add_scalars('Training vs. Validation Loss',
+    #                 { 'Training' : avg_loss, 'Validation' : avg_vloss },
+    #                 epoch + 1)
+    # writer.flush()
 
     # Track best performance, and save the model's state
     # avg_vloss = - roc_auc / (i+1) # track best model with best auc score
@@ -441,15 +451,6 @@ for epoch in range(EPOCHS):
         model_path = path + '/checkpoint_{}_{}'.format(timestamp, epoch)
         torch.save(model.state_dict(), model_path)
     
-    # # decay lr when no val loss improvement in 3 epochs; break if no val loss improvement in 5 epochs
-    # if ((epoch - best_epoch) >= 3):
-    #     if avg_vloss > best_vloss:
-    #         print("decay loss from " + str(LR) + " to " + str(LR / 2) + " as not seeing improvement in val loss")
-    #         LR = LR / 2
-    #         print("created new optimizer with LR " + str(LR))
-    #         if ((epoch - best_epoch) >= 5):
-    #             print("no improvement in 5 epochs, break")
-    #             break
     # # early stop
     if ((epoch - best_epoch) >= 3):
         print("no improvement in 3 epochs, break")
@@ -530,7 +531,6 @@ print(datetime.now())
 
 thresholds = optimize_threshold_metric(model, val_dataloader)
 np.savetxt(path + '/thresholds.txt', thresholds)
-np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
 
 # %%
