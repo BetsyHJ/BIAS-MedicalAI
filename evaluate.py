@@ -51,7 +51,8 @@ if data_name == 'NIH':
     # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val-lr1e-4/'
     # path = './tune-%s-on-NIH-train-shuffle' % ModelType
     # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend0.0-shuffle-lr1e-04_rot20' % (ModelType)
-    path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
+    # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
+    path = './checkpoints/tune-%s-on-NIH-train-w_joint_1e-02-shuffle-lr1e-04_rot20' % (ModelType)
     path += '_randomsplit/' if split_dir else '/'
 
     label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))

@@ -61,7 +61,8 @@ ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT'
 if data_name == 'NIH':
     root_dir = './NIH-large/'
     split_dir = 'split_random' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
-    path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
+    # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
+    path = './checkpoints/tune-%s-on-NIH-train-w_joint_1e-01-shuffle-lr1e-04_rot20' % (ModelType)
     path += '_randomsplit/' if split_dir else '/'
 
     label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
@@ -115,10 +116,10 @@ def val_transforms(examples):
 
 # # here we can use the bbox_list_2017.csv
 bbox_info = np.loadtxt("./NIH-large/BBox_List_2017.csv", dtype=str, skiprows=1, delimiter=',') # # Image Index,Finding Label,Bbox [x,y,w,h],,,
-# print("----------------- Load testset for BBox List only ------------------")
-# bbox_train_split = np.loadtxt('./NIH-large/BBox_List_train_split.csv', dtype=str)
-# bbox_info = bbox_info[np.where(bbox_train_split == 'True', False, True)]
-# print("----------------- Load %d testset done ---------------" % len(bbox_info))
+print("----------------- Load testset for BBox List only ------------------")
+bbox_train_split = np.loadtxt('./NIH-large/BBox_List_train_split.csv', dtype=str)
+bbox_info = bbox_info[np.where(bbox_train_split == 'True', False, True)]
+print("----------------- Load %d testset done ---------------" % len(bbox_info))
 
 bbox_dict = {}
 duplications = 0

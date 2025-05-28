@@ -13,11 +13,11 @@ class DifferentiableGradCAM:
         def forward_hook(module, input, output):
             self.feature_maps = output  # keep graph
 
-        def backward_hook(module, grad_input, grad_output):
-            self.gradients = grad_output[0]  # keep graph
+        # def backward_hook(module, grad_input, grad_output):
+        #     self.gradients = grad_output[0]  # keep graph
 
         self.target_layer.register_forward_hook(forward_hook)
-        self.target_layer.register_backward_hook(backward_hook)
+        # self.target_layer.register_backward_hook(backward_hook)
 
     def __call__(self, input_tensor, target_class_idx):
         """
@@ -27,11 +27,19 @@ class DifferentiableGradCAM:
         output = self.model(input_tensor)  # forward pass, shape: [B, num_classes]
         selected_scores = output[range(output.shape[0]), target_class_idx]  # shape: [B]
 
-        self.model.zero_grad()
-        selected_scores.sum().backward(retain_graph=True)
+        # self.model.zero_grad() # adding this will erase the gradient from the main gradient, i.e., that related to cls
+        # selected_scores.sum().backward(retain_graph=True, create_graph=True) # this will add gradient, later optimzer.step() will update the related parameters, instead we do below and hide the backward hook
+
+        grads = torch.autograd.grad(
+            selected_scores.sum(),
+            self.feature_maps,
+            retain_graph=True,
+            create_graph=True
+        )[0]
 
         # Compute weights: [B, C, 1, 1]
-        weights = self.gradients.mean(dim=(2, 3), keepdim=True)
+        # weights = self.gradients.mean(dim=(2, 3), keepdim=True)
+        weights = grads.mean(dim=(2, 3), keepdim=True)
 
         # Weighted sum of feature maps: [B, H, W]
         cam = torch.relu((weights * self.feature_maps).sum(dim=1))  # shape: [B, H, W]
