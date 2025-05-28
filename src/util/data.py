@@ -190,10 +190,10 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None,
     metadata_df['labels'] = metadata_df['Finding Labels'].map(lambda example: [float(class_labels.int2str(x) in example) for x in range(num_labels)])
     
     # only get the following info
-    metadata_df = metadata_df[['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']]
+    metadata_df = metadata_df[['image', 'Image Index', 'Finding Labels', 'Patient ID', 'Patient Gender', 'Patient Age', 'labels']]
 
     # from df to dict
-    def df_to_dict(df, keys=['image', 'Image Index', 'Finding Labels', 'Patient Gender', 'Patient Age', 'labels']):
+    def df_to_dict(df, keys=['image', 'Image Index', 'Finding Labels', 'Patient ID', 'Patient Gender', 'Patient Age', 'labels']):
         data_dict = {}
         for k in keys:
             data_dict[k] = list(df[k].values)
