@@ -125,6 +125,9 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None,
     if test_ds_only:
         assert label_list is not None
 
+    if split_dir == 'NIH-gender-split':
+        label_list = ['Atelectasis', 'Effusion']
+
     # # load train_val and test (filenames) sets
     if split_dir:
         root_dir_ = root_dir
@@ -225,7 +228,66 @@ def read_NIH_large(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None,
         test_ds = test_ds.cast_column("image", Image(mode="RGB"))
         return test_ds, class_labels
     
+def read_NIH_large_original_test(root_dir, meta_file = 'Data_Entry_2017.csv', label_list=None):
+    if label_list is None:
+        label_list = ['Atelectasis', 'Effusion']
 
+    # # load original test (filenames) sets
+    f = open(root_dir + 'test_list.txt')
+    test_filenames = [x.strip() for x in f.readlines()]
+    f.close()
+
+    # Load the metadata from the CSV file
+    metadata_file = os.path.join(root_dir, meta_file)
+    # Load the metadata from the CSV file
+    metadata_df = pd.read_csv(metadata_file)
+    # load only test filename
+    metadata_df = metadata_df[metadata_df['Image Index'].isin(test_filenames)]
+
+    # # Create a dictionary from the metadata for quick lookup
+    # metadata_dict = metadata_df.set_index('Image Index').to_dict(orient='index')
+    images_dir = []
+    image_paths = []
+    filenames_cor = []
+    for folder in os.listdir(root_dir):
+        if os.path.isdir(os.path.join(root_dir, folder)) and ('images_' in folder):
+            images_dir.append(os.path.join(root_dir, folder) + '/images/')
+            for image_file in os.listdir(images_dir[-1]): # TODO: just for check
+                image_path = os.path.join(images_dir[-1] , image_file)
+                if image_file.lower().endswith(('png')):
+                    image_paths.append(image_path)
+                    filenames_cor.append(image_file)
+                
+    filenames_to_path = dict(zip(filenames_cor, image_paths))
+    filenames_to_path = pd.Series(data=filenames_to_path)
+    
+    metadata_df = metadata_df[metadata_df['Image Index'].isin(filenames_cor)]
+    metadata_df['image'] = filenames_to_path.loc[metadata_df['Image Index']].values
+    
+    # Split "Finding Labels" into multiple labels
+    metadata_df['Finding Labels'] = metadata_df['Finding Labels'].str.split('|')
+
+    # Create a ClassLabel feature for each unique label
+    class_labels = ClassLabel(names=list(label_list))
+    num_labels = len(class_labels.names)
+
+    metadata_df['labels'] = metadata_df['Finding Labels'].map(lambda example: [float(class_labels.int2str(x) in example) for x in range(num_labels)])
+    
+    # only get the following info
+    metadata_df = metadata_df[['image', 'Image Index', 'Finding Labels', 'Patient ID', 'Patient Gender', 'Patient Age', 'labels']]
+
+    # from df to dict
+    def df_to_dict(df, keys=['image', 'Image Index', 'Finding Labels', 'Patient ID', 'Patient Gender', 'Patient Age', 'labels']):
+        data_dict = {}
+        for k in keys:
+            data_dict[k] = list(df[k].values)
+        return data_dict
+    # split metadata into train and test according to train_filenames and test_filenames
+    test_df = metadata_df
+    print("Only load test sets for annotations:", len(test_df))
+    test_ds = Dataset.from_dict(df_to_dict(test_df), split='test')
+    test_ds = test_ds.cast_column("image", Image(mode="RGB"))
+    return test_ds
 
 def read_CXP(root_dir, label_list=None, test_ds_only=False, split_dir=None):
     
