@@ -45,13 +45,15 @@ sys.path.append('./src/')
 import warnings
 warnings.filterwarnings("ignore")  # TODO: check
 
+from torch.optim.lr_scheduler import CosineAnnealingLR
+
 ## self-defined functions and classes
-from util.data import read_dataset_from_folder, read_NIH_large, read_CXP, read_CXP_original
+from util.data import read_dataset_from_folder, read_NIH_large, read_CXP, read_CXP_original, read_NIH_large_original_test
 from util.data import collate_fn
 from mymodel.resnet import ResNetMultiLabel
 from mymodel.densenet import DenseNetMultiLabel
 from mymodel.vision_transformer import ViTMultiLabel
-from mymodel.differentiable_grad_cam import DifferentiableGradCAM, soft_iou_loss
+from mymodel.differentiable_grad_cam import DifferentiableGradCAM, soft_iou_loss, negative_cam_penalty, negative_cam_penalty2, background_suppression_loss
 
 from disease_localization_metrics import bbox_to_mask
 # for check if the cam loss is correct
@@ -99,8 +101,10 @@ data_name = 'NIH' # 'CXP' or 'HIN'
 # # train_val_ds, test_ds, class_labels = read_dataset_from_folder(root_dir)
 if data_name == 'NIH':
     root_dir = './NIH-large/'
-    split_dir = 'split_random/' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
+    split_dir = 'NIH-gender-split' # 'NIH-age-split' # 'NIH-gender-split' # 'split_random/' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random'); using 'NIH-gender-split'
     train_val_ds, test_ds, class_labels = read_NIH_large(root_dir, split_dir=split_dir)
+    if (split_dir is not None) & (split_dir != "split_random/"):
+        ori_test_ds = read_NIH_large_original_test(root_dir)
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
     split_dir = './CXP/split_random/' # './CXP/split_random/'=8:1:1 or './CXP/original_split/'
@@ -125,6 +129,8 @@ for i in range(len(bbox_info)):
     v = bbox_info[i]
     if v[1] == "Infiltrate":
         v[1] = "Infiltration"
+    if v[1] not in class_labels.names:
+        continue
     if v[0] not in bbox_dict:
         bbox_dict[v[0]] = [[v[1], [int(float(x)) for x in v[2:6]]]]
     else:
@@ -134,11 +140,13 @@ bbox_image_index = bbox_dict.keys()
 name_to_index = {name: i for i, name in enumerate(train_val_ds["Image Index"])}
 subset_indices = [name_to_index[name] for name in bbox_image_index if name in name_to_index]
 subset = train_val_ds.select(subset_indices)
-# # some bbox images are in testset 
-name_to_index = {name: i for i, name in enumerate(test_ds["Image Index"])}
+assert len(subset) == 0
+# # all bbox images should be in original testset 
+name_to_index = {name: i for i, name in enumerate(ori_test_ds["Image Index"])}
 subset_indices = [name_to_index[name] for name in bbox_image_index if name in name_to_index]
-subset2 = test_ds.select(subset_indices)
+subset2 = ori_test_ds.select(subset_indices)
 trainset_w_bbox = concatenate_datasets([subset, subset2])
+print("The number of annotation images are", len(trainset_w_bbox))
 
 # # add BBox info to those images
 class_label2idx = dict(zip(class_labels.names, np.arange(len(class_labels.names))))
@@ -171,26 +179,28 @@ trainset_w_bbox = trainset_w_bbox.map(expand_annotations, batched=True, num_proc
 trainset_w_bbox = trainset_w_bbox.map(create_mask_tensors, batched=True, num_proc=4)
 
 # # start training
-EPOCHS = 10
-LR = 1e-4 # 1e-4 # 5e-5
+EPOCHS = 100
+LR = 1e-5 # 1e-5 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
 # path = './tune-ResNet50-on-NIH'
 # path = './tune-ResNet50-on-NIH-train-shuffle-0.125val/'
-lambda_cam = 0.1
-path = './checkpoints/tune-%s-on-%s-train-w_joint_%.e-shuffle-lr%.e_rot20' % (ModelType, data_name, lambda_cam, LR)
+lambda_cam = 1.0 # 0.01
+lambda_cls = 1.0 # usually 1.0
+print("------- setting cls loss to be %.2f" % lambda_cls + " to observe the learning curve of cam_loss -------")
+path = './checkpoints/tune-%s-on-%s-train-w_joint_%.e-shuffle-lr%.e_rot20_reg0.01' % (ModelType, data_name, lambda_cam, LR)
 if split_dir:
     if (data_name == 'CXP') and ('original' in split_dir):
         path += '_original/'
     else:
-        path += '_randomsplit/'
+        path += '_randomsplit/' if split_dir == 'split_random' else '_' + split_dir + '/'
 else:
     path += '/'
-print("Checkpoints stored in: ", path)
-np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
 if not os.path.exists(path):
     os.makedirs(path)
+print("Checkpoints stored in: ", path)
+np.savetxt(path + 'label_list.txt', class_labels.names, fmt='%s')
 
 if not ((data_name == 'CXP') and ('original' in split_dir)):
     ratio = 0.125
@@ -267,7 +277,8 @@ def val_transforms(examples):
 train_ds.set_transform(train_transforms)
 val_ds.set_transform(val_transforms)
 test_ds.set_transform(val_transforms)
-trainset_w_bbox.set_transform(train_transforms)
+print("!!!!! Use val_transforms to avoid randomhorizon and randomrotation and their effect on mismatch mask and heatmap generated by cam_grad !!!!!")
+trainset_w_bbox.set_transform(val_transforms) # use val_transforms to avoid randomhorizon and randomrotation and their effect on mismatch mask and heatmap generated by cam_grad
 # %%
 
 device = 'cpu'
@@ -315,7 +326,7 @@ criterion = nn.BCEWithLogitsLoss()
 
 wandb.init(
     project="SpuriousCorrelation",     # This will create or use an existing project
-    name="joint_loss_%.e" % lambda_cam,        # Optional: a name for this specific run
+    # name="joint_loss_%s_%s_%.e" % (data_name, 'ori' if not split_dir else split_dir, lambda_cam),        # Optional: a name for this specific run
     config={
         "epochs": EPOCHS,
         "batch_size": batch_size,
@@ -334,12 +345,16 @@ def train_one_epoch(epoch_index, tb_writer=None):
     bbox_batch_iter = train_w_bbox_iter
     running_loss = 0.0
     last_loss = 0.
+    all_logits = []
     for i, data in enumerate(train_dataloader):
         inputs, labels = data['pixel_values'], data['labels']
         optimizer.zero_grad()
         outputs = model(inputs)
         # classification loss
         loss_cls = criterion(outputs, labels)
+
+        # dirichlet prediction and penalty: Here
+        
 
         # Initialize for cam_loss
         layer_ = model.resnet.layer4[-1]
@@ -353,34 +368,79 @@ def train_one_epoch(epoch_index, tb_writer=None):
             bbox_batch = next(bbox_batch_iter)
         bbox_input, bbox_labels, bbox_masks = bbox_batch["pixel_values"], bbox_batch["target_class"], bbox_batch["mask_tensor"]
         # print(bbox_input.size(), bbox_labels.size())
-        cams = cam_extractor(bbox_input, bbox_labels)
+
+        cam_all = cam_extractor(bbox_input)
+        cams = cam_all[torch.arange(cam_all.size(0)), bbox_labels]  # shape: [B, H, W]
+
+        # cam = cam_extractor(bbox_input, bbox_labels)
         loss_cam = soft_iou_loss(cams, bbox_masks)
 
-        loss = loss_cls + lambda_cam * loss_cam.mean()
+        # # Penalizes CAM activation outside the bounding box region
+        # bg_penality_loss = background_suppression_loss(cams, bbox_masks)
+
+        # cls loss on the images with annotations
+        outputs_bbox = model(bbox_input)
+        loss_cls_bbox = criterion(outputs_bbox, F.one_hot(bbox_labels, num_classes=num_labels).float())
+        
+        # # penalize non-target classes within the positive region
+        penalty_neg_class = negative_cam_penalty(cam_all, bbox_labels, bbox_masks)
+        penalty_neg_class2 = negative_cam_penalty2(cam_all, bbox_labels)
+
+        # if (epoch_index // 2) % 2 == 0: # switch optimization every 2 epoch
+        #     optimize_mode = 'CLS'
+        #     loss = loss_cls
+        # else:
+        #     optimize_mode = 'CAM_wP'
+        #     loss = lambda_cam * loss_cam.mean() + 10.0 * penalty_neg_class + 1.0 * penalty_neg_class2
+            
+
+        # loss = lambda_cls * loss_cls + 1.0 * loss_cls_bbox + lambda_cam * loss_cam.mean() + 10.0 * penalty_neg_class + 1.0 * penalty_neg_class2
+        # loss = lambda_cls * loss_cls + 1.0 * loss_cls_bbox + lambda_cam * loss_cam.mean() + 1.0 * penalty_neg_class2 + 1.0 * bg_penality_loss
+        # loss = lambda_cls * loss_cls.detach() + lambda_cam * loss_cam.mean()
+        loss = 1.0 * loss_cls_bbox + lambda_cam * loss_cam.mean() + 10.0 * penalty_neg_class + 1.0 * penalty_neg_class2
+        # loss = lambda_cam * loss_cam.mean()
+
+        # if split_dir == 'NIH-gender-split':
+        #     # logits regularization
+        #     logits_reg = 0.1 * torch.mean(outputs ** 2)
+        #     loss += logits_reg
         
         loss.backward()
         optimizer.step()
+        
 
         # Gather data and report
         running_loss += loss.item()
+        all_logits.append(outputs.detach().cpu())
 
         # wandb logging per batch
         wandb.log({
             'loss/total': loss.item(),
             'loss/classification': loss_cls.item(),
             'loss/cam_alignment': loss_cam.mean().item(),
+            'loss/cls_bbox': loss_cls_bbox.item(),
+            'loss/penalty': penalty_neg_class.item(),
+            'loss/penalty2': penalty_neg_class2.item(),
+            # 'loss/bg_loss': bg_penality_loss.item(),
             'epoch': epoch_index,
             'step': epoch_index * len(train_dataloader) + i,
             'lambda': lambda_cam,
+            'learning_rate': optimizer.param_groups[0]['lr'],
         })
 
         # pbar.set_description('  batch {} loss: {}'.format(i + 1, loss.item()))
         if i % 10 == 9:
             last_loss = running_loss / 10 # loss per batch
-            # pbar.set_description('  batch {} loss: {}'.format(i + 1, last_loss))
-            # tb_x = epoch_index * len(train_dataloader) + i + 1
-            # tb_writer.add_scalar('Loss/train', last_loss, tb_x)
             running_loss = 0.
+
+            # track the sigmoid(logits) value as outfitting training on NIH-gender-split
+            probs = torch.sigmoid(torch.cat(all_logits, dim=0))
+            wandb.log({
+                "probs/hist": wandb.Histogram(probs.numpy()),
+                "probs/mean": probs.mean().item(),
+                # "logits_regularization": 0.1,
+            })
+
 
     return last_loss
 
@@ -394,15 +454,19 @@ best_vloss = 1_000_000.
 
 print(datetime.now(), flush=True)
 
-for epoch in range(EPOCHS):
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+weight_decay = 1e-2 if split_dir == 'NIH-gender-split' else 0.0 # need to avoid severe overfitting when using small dataset (e.g., 8k images)
+print("Using weight_decay:", weight_decay, flush=True)
+optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay = weight_decay)
+scheduler = CosineAnnealingLR(optimizer, T_max=100)
 
+test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=128)
+for epoch in range(EPOCHS):
     # Make sure gradient tracking is on, and do a pass over the data
     model.train(True)
     avg_loss = train_one_epoch(epoch, writer)
 
     running_vloss = 0.0
-    roc_auc, f1 = 0.0, 0.0
+    # roc_auc, f1 = 0.0, 0.0
     # Set the model to evaluation mode, disabling dropout and using population
     # statistics for batch normalization.
     model.eval()
@@ -410,27 +474,59 @@ for epoch in range(EPOCHS):
     print("starting training:", datetime.now(), flush=True)
     # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
+        y_true = torch.tensor([], dtype=torch.long)
+        predictions = torch.tensor([])
         for i, vdata in enumerate(val_dataloader):
-            vinputs, vlabels = vdata['pixel_values'], vdata['labels']
-            # classification loss
-            voutputs = model(vinputs)
-            vloss = criterion(voutputs, vlabels)
-            vprobs = torch.sigmoid(voutputs).cpu().numpy()
-            y_preds = np.zeros(vprobs.shape)
-            y_preds[np.where(vprobs >= 0.5)] = 1
-            roc_auc += roc_auc_score(vlabels.cpu().numpy(), vprobs, average = 'micro')
-            f1 += f1_score(vlabels.cpu().numpy(), y_preds, average = 'micro')
-            running_vloss += vloss
+            vinputs, vlabels = vdata['pixel_values'], vdata['labels'].cpu()
+            voutputs = model(vinputs).cpu()
+            predictions = torch.cat((predictions, voutputs), 0)
+            y_true = torch.cat((y_true, vlabels), 0)
+            running_vloss += criterion(voutputs, vlabels)
+        probs = torch.sigmoid(predictions).cpu().numpy()
+        y_pred = np.zeros(probs.shape)
+        y_pred[np.where(probs >= 0.5)] = 1
+        y_true = y_true.numpy()
+        f1_micro_val = f1_score(y_true=y_true, y_pred=y_pred, average='micro')
+        roc_auc_val = roc_auc_score(y_true, probs, average = 'micro')
+    
+        y_true = torch.tensor([], dtype=torch.long)
+        predictions = torch.tensor([])
+        for i, vdata in enumerate(test_dataloader):
+            vinputs, vlabels = vdata['pixel_values'], vdata['labels'].cpu()
+            voutputs = model(vinputs).cpu()
+            predictions = torch.cat((predictions, voutputs), 0)
+            y_true = torch.cat((y_true, vlabels), 0)
+        probs = torch.sigmoid(predictions).cpu().numpy()
+        y_pred = np.zeros(probs.shape)
+        y_pred[np.where(probs >= 0.5)] = 1
+        y_true = y_true.numpy()
+        f1_micro_test = f1_score(y_true=y_true, y_pred=y_pred, average='micro')
+        roc_auc_test = roc_auc_score(y_true, probs, average = 'micro')
 
+        # for i, vdata in enumerate(val_dataloader):
+        #     vinputs, vlabels = vdata['pixel_values'], vdata['labels']
+        #     # classification loss
+        #     voutputs = model(vinputs)
+        #     vloss = criterion(voutputs, vlabels)
+        #     vprobs = torch.sigmoid(voutputs).cpu().numpy()
+        #     y_preds = np.zeros(vprobs.shape)
+        #     y_preds[np.where(vprobs >= 0.5)] = 1
+        #     roc_auc += roc_auc_score(vlabels.cpu().numpy(), vprobs, average = 'micro')
+        #     f1 += f1_score(vlabels.cpu().numpy(), y_preds, average = 'micro')
+        #     running_vloss += vloss
+        
 
     avg_vloss = running_vloss / (i + 1)
-    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)
-
+    # print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)
+    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {} test_roc_auc {} test_f1 {}'.format(avg_loss, avg_vloss, roc_auc_val, f1_micro_val, roc_auc_test, f1_micro_test), flush=True)
+    
     wandb.log({
         "loss/train": avg_loss,
         "loss/val": avg_vloss,
-        "val/roc_auc": roc_auc / (i+1),
-        "val/f1": f1 / (i+1),
+        "val/roc_auc": roc_auc_val,
+        "val/f1": f1_micro_val,
+        "test/roc_auc": roc_auc_test,
+        "test/f1": f1_micro_test,
         "epoch": epoch
     })
 
@@ -451,10 +547,11 @@ for epoch in range(EPOCHS):
         model_path = path + '/checkpoint_{}_{}'.format(timestamp, epoch)
         torch.save(model.state_dict(), model_path)
     
-    # # early stop
-    if ((epoch - best_epoch) >= 3):
-        print("no improvement in 3 epochs, break")
-        break
+    # # # early stop
+    # if ((epoch - best_epoch) >= 3):
+    #     print("no improvement in 3 epochs, break")
+    #     break
+    scheduler.step()
 
 
 # %% [markdown]

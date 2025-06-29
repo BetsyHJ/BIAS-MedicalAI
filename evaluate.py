@@ -44,7 +44,7 @@ ModelType = 'ResNet50'  # select 'ResNet50','densenet', 'ViT'
 ## Load data
 if data_name == 'NIH':
     root_dir = './NIH-large/'
-    split_dir = 'split_random' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
+    split_dir = 'NIH-age-split' # 'NIH-gender-split' # None #'split_random' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
 
     # path = './tune-ResNet-on-NIH/'
     # path = './tune-ResNet50-on-NIH/'
@@ -52,13 +52,18 @@ if data_name == 'NIH':
     # path = './tune-%s-on-NIH-train-shuffle' % ModelType
     # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend0.0-shuffle-lr1e-04_rot20' % (ModelType)
     # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
-    path = './checkpoints/tune-%s-on-NIH-train-w_joint_1e-02-shuffle-lr1e-04_rot20' % (ModelType)
-    path += '_randomsplit/' if split_dir else '/'
+    path = './checkpoints/tune-%s-on-NIH-train-w_joint_0e+00-shuffle-lr1e-05_rot20_logitreg0.1' % (ModelType)
+    if split_dir is None:
+        path += '/'
+    else:
+        path += '_randomsplit/' if split_dir == 'split_random' else '_' + split_dir + '/'
 
     label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))
     print("Loading checkpoint from:", path, flush=True)
     print("label list:", label_list)
     test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=True, split_dir=split_dir)
+    # train_val_ds, test_ds, class_labels = read_NIH_large(root_dir, label_list=label_list, test_ds_only=False, split_dir=split_dir)
+    # test_ds = train_val_ds
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
     split_dir = './CXP/split_random/' # './CXP/split_random/'=8:1:1 or './CXP/original_split/'
@@ -121,18 +126,30 @@ model.load_state_dict(torch.load(path + checkpoint_best))
 model.eval()
 
 
-## Threshold
-thresholds = np.loadtxt(path + '/thresholds.txt')
-
 ## Evaluate
 def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
     # first, apply sigmoid on predictions which are of shape (batch_size, num_labels)
+    print("pre:", predictions[:10])
     probs = torch.sigmoid(predictions).cpu().numpy()
     # next, use threshold to turn them into integer predictions
     y_pred = np.zeros(probs.shape)
     y_pred[np.where(probs >= threshold)] = 1
     # finally, compute metrics
     y_true = labels
+    print("Check here.............")
+    print("y_true:", labels[:10])
+    print("prob:", probs[:10])
+    print(roc_auc_score(y_true[:10], probs[:10], average = 'micro'))
+    print(roc_auc_score(y_true[:10], probs[:10], average = 'macro'))
+
+    for i, name in enumerate(['Atelectasis', 'Effusion']):
+        try:
+            auc = roc_auc_score(y_true[:, i], probs[:, i])
+            print(f"AUC for {name}: {auc:.4f}")
+        except ValueError as e:
+            print(f"AUC for {name}: Cannot compute ({e})")
+    exit(0)
+
     f1_micro_average = f1_score(y_true=y_true, y_pred=y_pred, average='micro')
     roc_auc_micro = roc_auc_score(y_true, probs, average = 'micro')
     try:
@@ -187,11 +204,15 @@ print("------------------ Starting to evaluate -----------------")
 print(datetime.now())
 test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=256)
 
-evaluate(test_dataloader, threshold=thresholds)
-print(datetime.now())
-
 print("When thresholds are all 0.5 ---")
 evaluate(test_dataloader, threshold=0.5, draw_curve=False)
+
+## Threshold
+thresholds = np.loadtxt(path + '/thresholds.txt')
+
+print("When thresholds use the ones give best f1 on validation ---")
+evaluate(test_dataloader, threshold=thresholds)
+print(datetime.now())
 
 # print("------------------ Evaluating bias and fairness -----------------")
 # print(datetime.now())

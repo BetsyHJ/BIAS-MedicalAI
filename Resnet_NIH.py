@@ -80,7 +80,7 @@ data_name = 'NIH' # 'CXP' or 'HIN'
 # # train_val_ds, test_ds, class_labels = read_dataset_from_folder(root_dir)
 if data_name == 'NIH':
     root_dir = './NIH-large/'
-    split_dir = 'split_random/' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
+    split_dir = 'pre-train' # 'split_random/' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
     train_val_ds, test_ds, class_labels = read_NIH_large(root_dir, split_dir=split_dir)
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
@@ -93,7 +93,7 @@ elif data_name == 'CXP':
     print(datetime.now(), " ---------- load data done ----------")
 
 EPOCHS = 10
-LR = 1e-5 # 1e-4 # 5e-5
+LR = 1e-5 # 1e-4 # 1e-4 # 5e-5
 print("LR:", LR, '; Epochs:', EPOCHS, flush=True)
 
 
@@ -104,13 +104,14 @@ if split_dir:
     if (data_name == 'CXP') and ('original' in split_dir):
         path += '_original/'
     else:
-        path += '_randomsplit/'
+        path += '_randomsplit/' if split_dir == 'split_random' else '_' + split_dir + '/'
 else:
     path += '/'
-print("Checkpoints stored in: ", path)
 
 if not os.path.exists(path):
     os.makedirs(path)
+print("Checkpoints stored in: ", path)
+np.savetxt(path + 'label_list.txt', class_labels.names, fmt='%s')
 
 if not ((data_name == 'CXP') and ('original' in split_dir)):
     ratio = 0.125
@@ -157,7 +158,7 @@ print("We are using device:", device, flush=True)
 batch_size = 16 # default: 16
 print("Using batch_size: %d, default: 16" % batch_size)
 train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=batch_size, shuffle=True)
-val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size)
+val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=256)
 
 # %%
 # batch = next(iter(train_dataloader))
@@ -384,7 +385,7 @@ print(datetime.now())
 
 thresholds = optimize_threshold_metric(model, val_dataloader)
 np.savetxt(path + '/thresholds.txt', thresholds)
-np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
+# np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
 
 # %%

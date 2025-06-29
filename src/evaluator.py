@@ -53,3 +53,17 @@ def multi_label_metrics(predictions, labels, threshold=0.5, verbose=1):
     # disp.plot(xticks_rotation=45)
 
     return metrics
+
+def kl_divergence(alpha, num_classes):
+    """KL[Dir(alpha) || Dir(1)] for regularization"""
+    beta = torch.ones_like(alpha)  # Dir(1)
+    S_alpha = torch.sum(alpha, dim=1, keepdim=True)
+
+    lnB = torch.sum(torch.lgamma(alpha), dim=1) - torch.lgamma(S_alpha.squeeze(1))
+    lnB_uni = torch.sum(torch.lgamma(beta), dim=1) - torch.lgamma(torch.sum(beta, dim=1))
+
+    dg0 = torch.digamma(S_alpha)
+    dg1 = torch.digamma(alpha)
+
+    kl = torch.sum((alpha - beta) * (dg1 - dg0), dim=1) + lnB - lnB_uni
+    return kl

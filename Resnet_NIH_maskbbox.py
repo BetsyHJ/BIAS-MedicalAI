@@ -87,7 +87,7 @@ data_name = 'NIH' # 'CXP' or 'HIN'
 # # train_val_ds, test_ds, class_labels = read_dataset_from_folder(root_dir)
 if data_name == 'NIH':
     root_dir = './NIH-large/'
-    split_dir = 'split_random/' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
+    split_dir = None # 'split_random/' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
     train_val_ds, test_ds, class_labels = read_NIH_large(root_dir, split_dir=split_dir)
 elif data_name == 'CXP':
     root_dir = './CXP/CheXpert-v1.0/'
@@ -322,6 +322,7 @@ print("Checkpoints stored in: ", path)
 
 if not os.path.exists(path):
     os.makedirs(path)
+np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
 if not ((data_name == 'CXP') and ('original' in split_dir)):
     ratio = 0.125
@@ -368,7 +369,7 @@ print("We are using device:", device, flush=True)
 batch_size = 16 # default: 16
 print("Using batch_size: %d, default: 16" % batch_size)
 train_dataloader = DataLoader(train_ds, collate_fn=collate_fn, batch_size=batch_size, shuffle=True)
-val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=batch_size)
+val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=256)
 
 # %%
 # batch = next(iter(train_dataloader))
@@ -431,9 +432,8 @@ best_vloss = 1_000_000.
 
 print(datetime.now(), flush=True)
 
+optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 for epoch in range(EPOCHS):
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-
     # Make sure gradient tracking is on, and do a pass over the data
     model.train(True)
     avg_loss = train_one_epoch(epoch, writer)
@@ -446,6 +446,8 @@ for epoch in range(EPOCHS):
 
     # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
+        vy_true = torch.tensor([], dtype=torch.long)
+        vpredictions = torch.tensor([])
         for i, vdata in enumerate(val_dataloader):
             vinputs, vlabels = vdata['pixel_values'], vdata['labels']
             voutputs = model(vinputs)
@@ -453,12 +455,15 @@ for epoch in range(EPOCHS):
             vprobs = torch.sigmoid(voutputs).cpu().numpy()
             y_preds = np.zeros(vprobs.shape)
             y_preds[np.where(vprobs >= 0.5)] = 1
-            roc_auc += roc_auc_score(vlabels.cpu().numpy(), vprobs, average = 'micro')
+            vpredictions = torch.cat((vpredictions, torch.sigmoid(voutputs).cpu()), 0)
+            vy_true = torch.cat((vy_true, vlabels.cpu()), 0)
+            # roc_auc += roc_auc_score(vlabels.cpu().numpy(), vprobs, average = 'micro') # this would lead to incorrect estimation
             f1 += f1_score(vlabels.cpu().numpy(), y_preds, average = 'micro')
             running_vloss += vloss
+        roc_auc = roc_auc_score(vy_true.numpy(), vpredictions.numpy())
 
     avg_vloss = running_vloss / (i + 1)
-    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc / (i+1), f1 / (i+1)), flush=True)
+    print('LOSS train {} valid {} valid_roc_auc {} valid_f1 {}'.format(avg_loss, avg_vloss, roc_auc, f1 / (i+1)), flush=True)
 
     # Log the running loss averaged per batch
     # for both training and validation
@@ -566,7 +571,6 @@ print(datetime.now())
 
 thresholds = optimize_threshold_metric(model, val_dataloader)
 np.savetxt(path + '/thresholds.txt', thresholds)
-np.savetxt(path + '/label_list.txt', class_labels.names, fmt='%s')
 
 
 # %%

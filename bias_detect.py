@@ -42,11 +42,6 @@ from visualization import visualize_resnet_feature_maps, visualize_resnet_activa
 from visualization import visualize_resnet_activation_heatmaps_batch
 print(datetime.now())
 
-# import torchvision.models as models
-# resnet = models.resnet18(pretrained=True)
-# print(resnet)
-# exit(0)
-
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
@@ -62,7 +57,7 @@ if data_name == 'NIH':
     root_dir = './NIH-large/'
     split_dir = 'split_random' # default None: use original split; otherwise follow 8:1:1 randomly-split on all lists (using 'split_random')
     # path = './checkpoints/tune-%s-on-NIH-train-w_mask_blend_gau_noise-shuffle-lr1e-04_rot20' % (ModelType)
-    path = './checkpoints/tune-%s-on-NIH-train-w_joint_1e-01-shuffle-lr1e-04_rot20' % (ModelType)
+    path = './checkpoints/tune-%s-on-NIH-train-w_joint_1e-03-shuffle-lr1e-04_rot20' % (ModelType)
     path += '_randomsplit/' if split_dir else '/'
 
     label_list = list(np.loadtxt(path + 'label_list.txt', dtype='str'))

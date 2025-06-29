@@ -173,7 +173,7 @@ def visualize_resnet_activation_heatmaps(model, input_tensor, target_classes=Non
         ax.axis('off')
 
     plt.tight_layout()
-    path = f"./out/cam_heatmap_{bbox_info[0]}/"
+    path = f"./out_check/cam_heatmap_{target_classes[0]}/"
     if not os.path.exists(path):
         os.makedirs(path)
     plt.savefig(path + f"generate_plot3_grad_cam_heatmap_{image_id}_newpackage.pdf", format='pdf', bbox_inches="tight")
