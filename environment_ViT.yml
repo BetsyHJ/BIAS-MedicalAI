@@ -1,0 +1,18 @@
+name: ViT
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - transformers
+  - pytorch
+  - torchvision
+  - anaconda::jupyter
+  - matplotlib
+  - scikit-learn
+  - tensorboard
+  - datasets
+  - pytorch-cuda=12.1
+  - torchaudio
+  - pathlib
+  - seaborn
+prefix: /var/scratch/jhuang2/anaconda3/envs/ViT
